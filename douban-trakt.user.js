@@ -12,6 +12,7 @@
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @connect      api.trakt.tv
+// @connect      api.tmdb.org
 // ==/UserScript==
 
 (function () {
@@ -34,9 +35,11 @@
         transition: background-color 0.2s;
     `;
 
-    const API_URL = 'https://api.trakt.tv';
-    const CLIENT_ID = 'ae3b79dfd82d72aeab14337550d6762b9f161ddd5eea99e8ca1e2ddb0d484ecc';
-    const CLIENT_SECRET = '045f13defe55c1562ef7df44a67d0762843649aadaf15b8314620f50051f5b46';
+    const TRAKT_API_URL = 'https://api.trakt.tv';
+    const TRAKT_CLIENT_ID = 'ae3b79dfd82d72aeab14337550d6762b9f161ddd5eea99e8ca1e2ddb0d484ecc';
+    const TRAKT_CLIENT_SECRET = '045f13defe55c1562ef7df44a67d0762843649aadaf15b8314620f50051f5b46';
+    const TMDB_API_URL = 'https://api.tmdb.org';
+    const TMDB_API_KEY = 'ebb2c093078553178d5d75c6d86d7bde';
     const ACCESS_TOKEN_KEY = 'trakt_access_token';
     const DEBUG_KEY = 'trakt_debug_enabled';
 
@@ -153,64 +156,114 @@
         };
     }
 
-    function authenticateTrakt() {
-        debugLog('开始 Trakt 授权', {
-            hasClientId: Boolean(CLIENT_ID),
-            hasClientSecret: Boolean(CLIENT_SECRET)
+    function showPinPromptAsync() {
+        return new Promise(function (resolve) {
+            showPinPrompt(resolve);
+        });
+    }
+
+    function parseResponseBody(responseText) {
+        if (!responseText) return null;
+        return JSON.parse(responseText);
+    }
+
+    function createRequestError(response, fallbackMessage) {
+        const error = new Error(fallbackMessage || `请求失败: ${response.status}`);
+        error.status = response.status;
+        error.responseText = response.responseText;
+
+        try {
+            error.data = parseResponseBody(response.responseText);
+        } catch (parseError) {
+            error.data = response.responseText || null;
+        }
+
+        return error;
+    }
+
+    async function gmRequest(options) {
+        debugLog('发起请求', {
+            method: options.method || 'GET',
+            url: options.url,
+            headers: options.headers,
+            data: options.data
         });
 
-        if (!CLIENT_ID || !CLIENT_SECRET) {
+        const response = await new Promise(function (resolve, reject) {
+            GM_xmlhttpRequest({
+                ...options,
+                onload: resolve,
+                onerror: reject
+            });
+        });
+
+        const responseData = parseResponseBody(response.responseText);
+        debugLog('收到响应', {
+            method: options.method || 'GET',
+            url: options.url,
+            status: response.status,
+            data: responseData
+        });
+
+        if (response.status !== 200) {
+            throw createRequestError(response);
+        }
+
+        return responseData;
+    }
+
+    async function authenticateTrakt() {
+        debugLog('开始 Trakt 授权', {
+            hasClientId: Boolean(TRAKT_CLIENT_ID),
+            hasClientSecret: Boolean(TRAKT_CLIENT_SECRET)
+        });
+
+        if (!TRAKT_CLIENT_ID || !TRAKT_CLIENT_SECRET) {
             alert('脚本中未找到 Trakt Client ID 或 Secret，请检查代码。');
             return;
         }
 
-        const authUrl = `https://trakt.tv/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=urn:ietf:wg:oauth:2.0:oob`;
+        const authUrl = `https://trakt.tv/oauth/authorize?response_type=code&client_id=${TRAKT_CLIENT_ID}&redirect_uri=urn:ietf:wg:oauth:2.0:oob`;
         window.open(authUrl, '_blank');
 
-        showPinPrompt(function (pin) {
-            if (!pin) return;
+        const pin = await showPinPromptAsync();
+        if (!pin) return;
 
-            GM_xmlhttpRequest({
+        try {
+            const data = await gmRequest({
                 method: 'POST',
-                url: `${API_URL}/oauth/token`,
+                url: `${TRAKT_API_URL}/oauth/token`,
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 data: JSON.stringify({
                     code: pin,
-                    client_id: CLIENT_ID,
-                    client_secret: CLIENT_SECRET,
+                    client_id: TRAKT_CLIENT_ID,
+                    client_secret: TRAKT_CLIENT_SECRET,
                     redirect_uri: 'urn:ietf:wg:oauth:2.0:oob',
                     grant_type: 'authorization_code'
-                }),
-                onload: function (response) {
-                    debugLog('已收到 OAuth token 响应', {
-                        status: response.status,
-                        response: response
-                    });
-
-                    try {
-                        const data = JSON.parse(response.responseText);
-                        if (data.access_token) {
-                            GM_setValue(ACCESS_TOKEN_KEY, data.access_token);
-                            accessToken = data.access_token;
-                            alert('Trakt 授权成功，页面将刷新。');
-                            location.reload();
-                            return;
-                        }
-
-                        alert(`授权失败:\n${response.responseText}`);
-                    } catch (error) {
-                        debugError('解析 OAuth token 响应失败', error);
-                        alert('解析 Trakt Token 响应时出错。');
-                    }
-                },
-                onerror: function (error) {
-                    debugError('OAuth token 请求失败', error);
-                    alert('授权过程中发生网络错误。');
-                }
+                })
             });
-        });
+
+            debugLog('已收到 OAuth token 响应', data);
+
+            if (data && data.access_token) {
+                GM_setValue(ACCESS_TOKEN_KEY, data.access_token);
+                accessToken = data.access_token;
+                alert('Trakt 授权成功，页面将刷新。');
+                location.reload();
+                return;
+            }
+
+            alert(`授权失败:\n${JSON.stringify(data)}`);
+        } catch (error) {
+            debugError('OAuth token 请求失败', error);
+            if (error.status) {
+                alert(`授权失败: ${error.status}\n${typeof error.data === 'string' ? error.data : JSON.stringify(error.data)}`);
+            } else {
+                alert('授权过程中发生网络错误。');
+            }
+        }
     }
 
     function getImdbId() {
@@ -221,6 +274,68 @@
         const imdbId = match ? match[1] : null;
         debugLog('IMDb 提取结果', { imdbId: imdbId });
         return imdbId;
+    }
+
+    function parseChineseSeasonNumber(value) {
+        const numerals = {
+            '一': 1,
+            '二': 2,
+            '三': 3,
+            '四': 4,
+            '五': 5,
+            '六': 6,
+            '七': 7,
+            '八': 8,
+            '九': 9,
+            '十': 10
+        };
+
+        if (!value) return null;
+        if (/^\d+$/.test(value)) return Number(value);
+        if (numerals[value]) return numerals[value];
+        if (value === '十一') return 11;
+        if (value === '十二') return 12;
+        if (value.startsWith('十') && numerals[value.slice(1)]) {
+            return 10 + numerals[value.slice(1)];
+        }
+        if (value.endsWith('十') && numerals[value[0]]) {
+            return numerals[value[0]] * 10;
+        }
+        if (value.length === 2 && numerals[value[0]] && numerals[value[1]]) {
+            return numerals[value[0]] * 10 + numerals[value[1]];
+        }
+
+        return null;
+    }
+
+    function getSeasonNumber() {
+        const titleText = document.querySelector('h1')?.innerText || document.title || '';
+        const normalizedTitle = titleText.replace(/\s+/g, ' ').trim();
+        const seasonPatterns = [
+            /第\s*([0-9一二三四五六七八九十]+)\s*季/i,
+            /\bseason\s+(\d+)\b/i,
+            /\bs(\d{1,2})\b/i
+        ];
+
+        for (const pattern of seasonPatterns) {
+            const match = normalizedTitle.match(pattern);
+            if (!match) continue;
+
+            const seasonNumber = parseChineseSeasonNumber(match[1]);
+            if (seasonNumber) {
+                debugLog('季数提取结果', {
+                    seasonNumber: seasonNumber,
+                    source: normalizedTitle
+                });
+                return seasonNumber;
+            }
+        }
+
+        debugLog('季数提取结果', {
+            seasonNumber: null,
+            source: normalizedTitle
+        });
+        return null;
     }
 
     function setButtonState(button, text, action, color, disabled) {
@@ -234,7 +349,7 @@
         const headers = {
             'Content-Type': 'application/json',
             'trakt-api-version': '2',
-            'trakt-api-key': CLIENT_ID
+            'trakt-api-key': TRAKT_CLIENT_ID
         };
 
         if (includeAuth) {
@@ -244,57 +359,179 @@
         return headers;
     }
 
-    function checkWatchlistStatus(traktId, button) {
-        debugLog('检查待看状态', { traktId: traktId });
-        setButtonState(button, '读取中...', null, null, true);
-
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: `${API_URL}/sync/watchlist?limit=2000`,
-            headers: traktHeaders(true),
-            onload: function (response) {
-                debugLog('已收到待看列表响应', {
-                    status: response.status,
-                    response: response
+    function bindWatchlistButton(traktId, button) {
+        if (!accessToken) {
+            debugLog('未找到访问令牌，显示连接按钮');
+            setButtonState(button, '连接', null, '#9F42C6', false);
+            button.onclick = function () {
+                authenticateTrakt().catch(function (error) {
+                    debugError('Trakt 授权流程失败', error);
                 });
+            };
+            return;
+        }
 
-                button.disabled = false;
-
-                if (response.status !== 200) {
-                    setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
-                    return;
-                }
-
-                try {
-                    const watchlist = JSON.parse(response.responseText);
-                    const isFound = watchlist.some((item) => {
-                        const media = item[item.type];
-                        return media && media.ids && media.ids.trakt === traktId;
-                    });
-
-                    debugLog('待看状态已解析', {
-                        traktId: traktId,
-                        inWatchlist: isFound
-                    });
-
-                    if (isFound) {
-                        setButtonState(button, '- 移除', 'remove', '#666', false);
-                    } else {
-                        setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
-                    }
-                } catch (error) {
-                    debugError('解析待看列表响应失败', error);
-                    setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
-                }
-            },
-            onerror: function (error) {
-                debugError('待看列表请求失败', error);
-                setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
+        debugLog('已找到访问令牌，开始检查待看状态');
+        button.onclick = async function (event) {
+            event.preventDefault();
+            try {
+                await toggleTraktWatchlist(traktId, button.dataset.action, button);
+            } catch (error) {
+                debugError('切换待看状态失败', error);
             }
+        };
+        checkWatchlistStatus(traktId, button).catch(function (error) {
+            debugError('检查待看状态失败', error);
         });
     }
 
-    function toggleTraktWatchlist(traktId, action, button) {
+    function applyTraktMatch(data, traktLink, button, infoDiv) {
+        if (!data || data.length === 0) {
+            debugLog('未找到 Trakt 匹配结果');
+            traktLink.innerText = '无匹配结果';
+            traktLink.href = '#';
+            setButtonState(button, '无资源', null, '#ccc', true);
+            infoDiv.appendChild(button);
+            return false;
+        }
+
+        const firstMatch = data[0];
+        const itemType = firstMatch.type;
+        const media = firstMatch[itemType];
+        const traktId = media.ids.trakt;
+        const slug = media.ids.slug || traktId;
+        const seasonNumber = itemType === 'show' ? getSeasonNumber() : null;
+        const traktUrl = seasonNumber
+            ? `https://app.trakt.tv/${itemType}s/${slug}?season=${seasonNumber}`
+            : `https://app.trakt.tv/${itemType}s/${slug}`;
+
+        debugLog('Trakt 匹配结果已解析', {
+            itemType: itemType,
+            traktId: traktId,
+            slug: slug,
+            title: media.title,
+            year: media.year,
+            seasonNumber: seasonNumber
+        });
+
+        traktLink.innerText = String(traktId);
+        traktLink.href = traktUrl;
+        infoDiv.appendChild(button);
+        bindWatchlistButton(traktId, button);
+        return true;
+    }
+
+    function showNoMatchState(traktLink, button, infoDiv) {
+        traktLink.innerText = '无匹配结果';
+        traktLink.href = '#';
+        setButtonState(button, '无资源', null, '#ccc', true);
+        infoDiv.appendChild(button);
+    }
+
+    async function requestTraktByTmdbMatch(imdbId, tmdbId, tmdbType, traktLink, button, infoDiv) {
+        const traktTmdbUrl = `${TRAKT_API_URL}/search/tmdb/${tmdbId}?type=${tmdbType}`;
+        traktLink.innerText = 'Trakt 回退匹配中...';
+        debugLog('TMDB 匹配成功，开始查询 Trakt', {
+            imdbId: imdbId,
+            tmdbId: tmdbId,
+            tmdbType: tmdbType,
+            traktTmdbUrl: traktTmdbUrl
+        });
+
+        try {
+            const traktData = await gmRequest({
+                method: 'GET',
+                url: traktTmdbUrl,
+                headers: traktHeaders(false)
+            });
+
+            debugLog('已收到 Trakt TMDB 回退响应', traktData);
+            applyTraktMatch(traktData, traktLink, button, infoDiv);
+        } catch (error) {
+            debugError('Trakt TMDB 回退请求失败', error);
+            traktLink.innerText = error.status ? 'Trakt 查询失败' : '网络错误';
+        }
+    }
+
+    async function requestTmdbMatch(imdbId, traktLink, button, infoDiv) {
+        const tmdbFindUrl = `${TMDB_API_URL}/3/find/${imdbId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`;
+        traktLink.innerText = 'TMDB 查询中...';
+        debugLog('IMDb 无匹配，开始查询 TMDB', {
+            imdbId: imdbId,
+            tmdbFindUrl: tmdbFindUrl
+        });
+
+        try {
+            const tmdbData = await gmRequest({
+                method: 'GET',
+                url: tmdbFindUrl,
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            debugLog('已收到 TMDB 查询响应', tmdbData);
+
+            const movie = tmdbData.movie_results?.[0];
+            const show = tmdbData.tv_results?.[0];
+            const episode = tmdbData.tv_episode_results?.[0];
+            const tmdbType = movie ? 'movie' : show || episode ? 'show' : null;
+            const tmdbId = movie?.id || show?.id || episode?.show_id || null;
+
+            if (!tmdbType || !tmdbId) {
+                debugLog('TMDB 未返回匹配结果', { imdbId: imdbId });
+                showNoMatchState(traktLink, button, infoDiv);
+                return;
+            }
+
+            await requestTraktByTmdbMatch(imdbId, tmdbId, tmdbType, traktLink, button, infoDiv);
+        } catch (error) {
+            debugError('TMDB 查询请求失败', error);
+            traktLink.innerText = error.status ? 'TMDB 查询失败' : '网络错误';
+        }
+    }
+
+    async function searchTraktByTmdbId(imdbId, traktLink, button, infoDiv) {
+        await requestTmdbMatch(imdbId, traktLink, button, infoDiv);
+    }
+
+    async function checkWatchlistStatus(traktId, button) {
+        debugLog('检查待看状态', { traktId: traktId });
+        setButtonState(button, '读取中...', null, null, true);
+
+        try {
+            const watchlist = await gmRequest({
+                method: 'GET',
+                url: `${TRAKT_API_URL}/sync/watchlist?limit=2000`,
+                headers: traktHeaders(true)
+            });
+
+            debugLog('已收到待看列表响应', watchlist);
+
+            button.disabled = false;
+            const isFound = watchlist.some((item) => {
+                const media = item[item.type];
+                return media && media.ids && media.ids.trakt === traktId;
+            });
+
+            debugLog('待看状态已解析', {
+                traktId: traktId,
+                inWatchlist: isFound
+            });
+
+            if (isFound) {
+                setButtonState(button, '- 移除', 'remove', '#666', false);
+            } else {
+                setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
+            }
+        } catch (error) {
+            debugError('待看列表请求失败', error);
+            button.disabled = false;
+            setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
+        }
+    }
+
+    async function toggleTraktWatchlist(traktId, action, button) {
         debugLog('切换待看状态', {
             traktId: traktId,
             action: action
@@ -310,52 +547,43 @@
         debugLog('待看同步请求体已准备', payload);
         setButtonState(button, '同步中...', action, null, true);
 
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: `${API_URL}${endpoint}`,
-            headers: traktHeaders(true),
-            data: JSON.stringify(payload),
-            onload: function (response) {
-                debugLog('已收到待看同步响应', {
-                    status: response.status,
-                    response: response
-                });
+        try {
+            const data = await gmRequest({
+                method: 'POST',
+                url: `${TRAKT_API_URL}${endpoint}`,
+                headers: traktHeaders(true),
+                data: JSON.stringify(payload)
+            });
 
-                if (response.status === 200 || response.status === 201) {
-                    if (isAdding) {
-                        setButtonState(button, '- 移除', 'remove', '#666', false);
-                    } else {
-                        setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
-                    }
-                    return;
-                }
+            debugLog('已收到待看同步响应', data);
 
-                if (response.status === 401) {
-                    alert('Trakt token 可能已过期，请重新授权。');
-                } else {
-                    alert(`Trakt API 错误: ${response.status}\n${response.responseText}`);
-                }
-
-                setButtonState(button, isAdding ? '+ 待看' : '- 移除', action, isAdding ? '#9F42C6' : '#666', false);
-            },
-            onerror: function (error) {
-                debugError('待看同步请求失败', error);
-                setButtonState(button, isAdding ? '+ 待看' : '- 移除', action, isAdding ? '#9F42C6' : '#666', false);
+            if (isAdding) {
+                setButtonState(button, '- 移除', 'remove', '#666', false);
+            } else {
+                setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
+            }
+        } catch (error) {
+            debugError('待看同步请求失败', error);
+            setButtonState(button, isAdding ? '+ 待看' : '- 移除', action, isAdding ? '#9F42C6' : '#666', false);
+            if (error.status === 401) {
+                alert('Trakt token 可能已过期，请重新授权。');
+            } else if (error.status) {
+                alert(`Trakt API 错误: ${error.status}\n${typeof error.data === 'string' ? error.data : JSON.stringify(error.data)}`);
+            } else {
                 alert('同步 Trakt 时发生网络错误。');
             }
-        });
+        }
     }
 
-    function resolveQueryUrl(traktLink, button, infoDiv) {
-        const imdbId = getImdbId();
-        if (imdbId) {
-            traktLink.innerText = '精确匹配中...';
-            const queryUrl = `${API_URL}/search/imdb/${imdbId}?type=movie,show`;
-            debugLog('使用 IMDb 精确搜索', { imdbId: imdbId, queryUrl: queryUrl });
-            return queryUrl;
-        }
+    function buildImdbQueryUrl(imdbId) {
+        if (!imdbId) return null;
+        const queryUrl = `${TRAKT_API_URL}/search/imdb/${imdbId}?type=movie,show`;
+        debugLog('使用 IMDb 精确搜索', { imdbId: imdbId, queryUrl: queryUrl });
+        return queryUrl;
+    }
 
-        const rawTitle = document.querySelector('h1 span[property="v:itemreviewed"]')?.innerText || document.title.replace(' (豆瓣)', '');
+    function buildTitleQueryUrl(traktLink, button, infoDiv) {
+        const rawTitle = document.title.replace(' (豆瓣)', '');
         const yearStr = (document.querySelector('h1 span.year')?.innerText || '').replace(/[()]/g, '').trim();
 
         debugLog('使用标题回退搜索', {
@@ -371,12 +599,12 @@
         }
 
         traktLink.innerText = '按名称搜索中...';
-        const queryUrl = `${API_URL}/search/movie,show?query=${encodeURIComponent(rawTitle)}&years=${yearStr}`;
+        const queryUrl = `${TRAKT_API_URL}/search/movie,show?query=${encodeURIComponent(rawTitle)}&years=${yearStr}`;
         debugLog('回退查询已准备', { queryUrl: queryUrl });
         return queryUrl;
     }
 
-    function init() {
+    async function init() {
         const infoDiv = document.getElementById('info');
         if (!infoDiv) {
             debugLog('未找到 #info，初始化终止');
@@ -400,77 +628,63 @@
         traktLink.target = '_blank';
         infoDiv.appendChild(traktLink);
 
-        const queryUrl = resolveQueryUrl(traktLink, btn, infoDiv);
-        if (!queryUrl) return;
+        const imdbId = getImdbId();
+        const imdbQueryUrl = buildImdbQueryUrl(imdbId);
+        if (imdbQueryUrl) {
+            traktLink.innerText = '精确匹配中...';
 
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: queryUrl,
-            headers: traktHeaders(false),
-            onload: function (response) {
-                debugLog('已收到搜索响应', {
-                    status: response.status,
-                    response: response
+            try {
+                const data = await gmRequest({
+                    method: 'GET',
+                    url: imdbQueryUrl,
+                    headers: traktHeaders(false)
                 });
 
-                if (response.status !== 200) {
-                    traktLink.innerText = '查询失败';
+                debugLog('已收到 IMDb 搜索响应', data);
+
+                if (data && data.length > 0) {
+                    applyTraktMatch(data, traktLink, btn, infoDiv);
                     return;
                 }
-
-                try {
-                    const data = JSON.parse(response.responseText);
-                    if (!data || data.length === 0) {
-                        debugLog('未找到 Trakt 匹配结果');
-                        traktLink.innerText = '无匹配结果';
-                        traktLink.href = '#';
-                        setButtonState(btn, '无资源', null, '#ccc', true);
-                        infoDiv.appendChild(btn);
-                        return;
-                    }
-
-                    const firstMatch = data[0];
-                    const itemType = firstMatch.type;
-                    const media = firstMatch[itemType];
-                    const traktId = media.ids.trakt;
-                    const slug = media.ids.slug || traktId;
-
-                    debugLog('Trakt 匹配结果已解析', {
-                        itemType: itemType,
-                        traktId: traktId,
-                        slug: slug,
-                        title: media.title,
-                        year: media.year
-                    });
-
-                    traktLink.innerText = String(traktId);
-                    traktLink.href = `https://trakt.tv/${itemType}s/${slug}`;
-                    infoDiv.appendChild(btn);
-
-                    if (!accessToken) {
-                        debugLog('未找到访问令牌，显示连接按钮');
-                        setButtonState(btn, '连接', null, '#9F42C6', false);
-                        btn.onclick = authenticateTrakt;
-                        return;
-                    }
-
-                    debugLog('已找到访问令牌，开始检查待看状态');
-                    btn.onclick = function (event) {
-                        event.preventDefault();
-                        toggleTraktWatchlist(traktId, btn.dataset.action, btn);
-                    };
-                    checkWatchlistStatus(traktId, btn);
-                } catch (error) {
-                    debugError('解析搜索响应失败', error);
-                    traktLink.innerText = '解析错误';
-                }
-            },
-            onerror: function (error) {
-                debugError('搜索请求失败', error);
-                traktLink.innerText = '网络错误';
+            } catch (error) {
+                debugError('IMDb 搜索请求失败', error);
+                traktLink.innerText = error.status ? '查询失败' : '网络错误';
+                if (error.status) return;
             }
-        });
+        }
+
+        const titleQueryUrl = buildTitleQueryUrl(traktLink, btn, infoDiv);
+        if (!titleQueryUrl) return;
+
+        try {
+            const data = await gmRequest({
+                method: 'GET',
+                url: titleQueryUrl,
+                headers: traktHeaders(false)
+            });
+
+            debugLog('已收到标题搜索响应', data);
+
+            if (data && data.length > 0) {
+                applyTraktMatch(data, traktLink, btn, infoDiv);
+                return;
+            }
+
+            if (imdbId) {
+                await searchTraktByTmdbId(imdbId, traktLink, btn, infoDiv);
+                return;
+            }
+
+            applyTraktMatch(data, traktLink, btn, infoDiv);
+        } catch (error) {
+            debugError('标题搜索请求失败', error);
+            traktLink.innerText = error.status ? '查询失败' : '网络错误';
+        }
     }
 
-    window.addEventListener('load', init);
+    window.addEventListener('load', function () {
+        init().catch(function (error) {
+            debugError('初始化失败', error);
+        });
+    });
 })();
