@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         豆瓣影视添加 Trakt 待看按钮
-// @namespace    http://tampermonkey.net/
+// @namespace    https://github.com/DemoJameson/Userscripts
 // @version      1.1.0
 // @description  在豆瓣电影和剧集页面添加 Trakt 待看按钮，并提供可切换的调试日志。
 // @author       DemoJameson
