@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         豆瓣影视添加 Trakt 待看按钮
 // @namespace    https://github.com/DemoJameson/Userscripts
-// @version      1.1.0
+// @version      1.1.1
 // @description  在豆瓣电影和剧集页面添加 Trakt 待看按钮，并提供可切换的调试日志。
 // @author       DemoJameson
 // @updateURL    https://raw.githubusercontent.com/DemoJameson/Userscripts/main/douban-trakt.user.js
@@ -181,6 +181,10 @@
         return error;
     }
 
+    function isSuccessfulStatus(status) {
+        return status >= 200 && status < 300;
+    }
+
     async function gmRequest(options) {
         debugLog('发起请求', {
             method: options.method || 'GET',
@@ -205,7 +209,7 @@
             data: responseData
         });
 
-        if (response.status !== 200) {
+        if (!isSuccessfulStatus(response.status)) {
             throw createRequestError(response);
         }
 
@@ -250,7 +254,6 @@
             if (data && data.access_token) {
                 GM_setValue(ACCESS_TOKEN_KEY, data.access_token);
                 accessToken = data.access_token;
-                alert('Trakt 授权成功，页面将刷新。');
                 location.reload();
                 return;
             }
