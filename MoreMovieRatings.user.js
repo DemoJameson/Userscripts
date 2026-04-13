@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoreMovieRatings
 // @namespace    http://www.jayxon.com/
-// @version      0.7.4
+// @version      0.7.5
 // @description  Show IMDb ratings on Douban, and vice versa
 // @description:zh-CN 豆瓣和IMDb互相显示评分
 // @author       JayXon & DJ
@@ -391,11 +391,6 @@ function getIMDbIdFromInfoLabel(label_node) {
                     "<span style='vertical-align: middle; display: inline-block; line-height: 18px'>" + data.tomatoUserMeter + "%</span>"
                 );
             }
-        }
-
-        // MPAA Rating
-        if (!isEmpty(data.Rated)) {
-            insertDoubanInfo('MPAA评级', data.Rated);
         }
 
         // Box office
