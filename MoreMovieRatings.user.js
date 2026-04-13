@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         MoreMovieRatings
 // @namespace    http://www.jayxon.com/
-// @version      0.7.3
+// @version      0.7.4
 // @description  Show IMDb ratings on Douban, and vice versa
 // @description:zh-CN 豆瓣和IMDb互相显示评分
-// @author       JayXon
+// @author       JayXon & DJ
 // @match        *://movie.douban.com/subject/*
 // @match        *://www.douban.com/personage/*
 // @match        *://www.imdb.com/title/tt*
@@ -14,6 +14,8 @@
 // @connect      movie.douban.com
 // @connect      p.media-imdb.com
 // @connect      www.omdbapi.com
+// @downloadURL  https://raw.githubusercontent.com/DemoJameson/Userscripts/main/MoreMovieRatings.user.js
+// @updateURL    https://raw.githubusercontent.com/DemoJameson/Userscripts/main/MoreMovieRatings.user.js
 // ==/UserScript==
 
 'use strict';
@@ -214,6 +216,33 @@ function linkifyIMDbNode(text_node, url_base) {
     return id;
 }
 
+function getIMDbIdFromInfoLabel(label_node) {
+    let node = label_node.nextSibling;
+    while (node && node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) {
+        node = node.nextSibling;
+    }
+    if (!node)
+        return;
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+        const element = node;
+        const link = element.matches('a') ? element : element.querySelector('a');
+        const href = link && link.href ? link.href.match(/\/(tt\d+)(?:\/|$)/) : null;
+        if (href)
+            return href[1];
+        const text = element.textContent && element.textContent.match(/tt\d+/);
+        if (text)
+            return text[0];
+        return;
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent.match(/tt\d+/);
+        if (text)
+            return linkifyIMDbNode(node, 'https://www.imdb.com/title/');
+    }
+}
+
 (async () => {
     let host = location.hostname;
     if (host === 'movie.douban.com') {
@@ -253,8 +282,11 @@ function linkifyIMDbNode(text_node, url_base) {
             console.log('IMDb id not available');
             return;
         }
-        const text_node = imdb_text.nextSibling;
-        const id = linkifyIMDbNode(text_node, 'https://www.imdb.com/title/');
+        const id = getIMDbIdFromInfoLabel(imdb_text);
+        if (!id) {
+            console.log('IMDb id not available');
+            return;
+        }
 
         const data = await getIMDbInfo(id);
         if (!data)
