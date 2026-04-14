@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         豆瓣影视添加 Trakt 待看按钮
 // @namespace    https://github.com/DemoJameson/Userscripts
-// @version      1.1.1
+// @version      1.1.2
 // @description  在豆瓣电影和剧集页面添加 Trakt 待看按钮，并提供可切换的调试日志。
 // @author       DemoJameson
 // @updateURL    https://raw.githubusercontent.com/DemoJameson/Userscripts/main/douban-trakt.user.js
@@ -388,13 +388,12 @@
         });
     }
 
-    function applyTraktMatch(data, traktLink, button, infoDiv) {
+    function applyTraktMatch(data, traktLink, button) {
         if (!data || data.length === 0) {
             debugLog('未找到 Trakt 匹配结果');
             traktLink.innerText = '无匹配结果';
             traktLink.href = '#';
             setButtonState(button, '无资源', null, '#ccc', true);
-            infoDiv.appendChild(button);
             return false;
         }
 
@@ -419,19 +418,17 @@
 
         traktLink.innerText = String(traktId);
         traktLink.href = traktUrl;
-        infoDiv.appendChild(button);
         bindWatchlistButton(traktId, button);
         return true;
     }
 
-    function showNoMatchState(traktLink, button, infoDiv) {
+    function showNoMatchState(traktLink, button) {
         traktLink.innerText = '无匹配结果';
         traktLink.href = '#';
         setButtonState(button, '无资源', null, '#ccc', true);
-        infoDiv.appendChild(button);
     }
 
-    async function requestTraktByTmdbMatch(imdbId, tmdbId, tmdbType, traktLink, button, infoDiv) {
+    async function requestTraktByTmdbMatch(imdbId, tmdbId, tmdbType, traktLink, button) {
         const traktTmdbUrl = `${TRAKT_API_URL}/search/tmdb/${tmdbId}?type=${tmdbType}`;
         traktLink.innerText = 'Trakt 回退匹配中...';
         debugLog('TMDB 匹配成功，开始查询 Trakt', {
@@ -449,14 +446,14 @@
             });
 
             debugLog('已收到 Trakt TMDB 回退响应', traktData);
-            applyTraktMatch(traktData, traktLink, button, infoDiv);
+            applyTraktMatch(traktData, traktLink, button);
         } catch (error) {
             debugError('Trakt TMDB 回退请求失败', error);
             traktLink.innerText = error.status ? 'Trakt 查询失败' : '网络错误';
         }
     }
 
-    async function requestTmdbMatch(imdbId, traktLink, button, infoDiv) {
+    async function requestTmdbMatch(imdbId, traktLink, button) {
         const tmdbFindUrl = `${TMDB_API_URL}/3/find/${imdbId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`;
         traktLink.innerText = 'TMDB 查询中...';
         debugLog('IMDb 无匹配，开始查询 TMDB', {
@@ -483,19 +480,19 @@
 
             if (!tmdbType || !tmdbId) {
                 debugLog('TMDB 未返回匹配结果', { imdbId: imdbId });
-                showNoMatchState(traktLink, button, infoDiv);
+                showNoMatchState(traktLink, button);
                 return;
             }
 
-            await requestTraktByTmdbMatch(imdbId, tmdbId, tmdbType, traktLink, button, infoDiv);
+            await requestTraktByTmdbMatch(imdbId, tmdbId, tmdbType, traktLink, button);
         } catch (error) {
             debugError('TMDB 查询请求失败', error);
             traktLink.innerText = error.status ? 'TMDB 查询失败' : '网络错误';
         }
     }
 
-    async function searchTraktByTmdbId(imdbId, traktLink, button, infoDiv) {
-        await requestTmdbMatch(imdbId, traktLink, button, infoDiv);
+    async function searchTraktByTmdbId(imdbId, traktLink, button) {
+        await requestTmdbMatch(imdbId, traktLink, button);
     }
 
     async function checkWatchlistStatus(traktId, button) {
@@ -597,7 +594,6 @@
         if (!rawTitle) {
             traktLink.innerText = '无有效信息';
             setButtonState(button, '不可用', null, '#ccc', true);
-            infoDiv.appendChild(button);
             return null;
         }
 
@@ -623,13 +619,19 @@
         traktLabel.innerText = 'Trakt: ';
         infoDiv.appendChild(traktLabel);
 
+        const traktMeta = document.createElement('span');
+        traktMeta.style.whiteSpace = 'nowrap';
+        infoDiv.appendChild(traktMeta);
+
         const btn = document.createElement('button');
         btn.style.cssText = BTN_STYLE;
         btn.type = 'button';
+        setButtonState(btn, '读取中...', null, '#ccc', true);
 
         const traktLink = document.createElement('a');
         traktLink.target = '_blank';
-        infoDiv.appendChild(traktLink);
+        traktMeta.appendChild(traktLink);
+        traktMeta.appendChild(btn);
 
         const imdbId = getImdbId();
         const imdbQueryUrl = buildImdbQueryUrl(imdbId);
@@ -646,7 +648,7 @@
                 debugLog('已收到 IMDb 搜索响应', data);
 
                 if (data && data.length > 0) {
-                    applyTraktMatch(data, traktLink, btn, infoDiv);
+                    applyTraktMatch(data, traktLink, btn);
                     return;
                 }
             } catch (error) {
@@ -669,16 +671,16 @@
             debugLog('已收到标题搜索响应', data);
 
             if (data && data.length > 0) {
-                applyTraktMatch(data, traktLink, btn, infoDiv);
+                applyTraktMatch(data, traktLink, btn);
                 return;
             }
 
             if (imdbId) {
-                await searchTraktByTmdbId(imdbId, traktLink, btn, infoDiv);
+                await searchTraktByTmdbId(imdbId, traktLink, btn);
                 return;
             }
 
-            applyTraktMatch(data, traktLink, btn, infoDiv);
+            applyTraktMatch(data, traktLink, btn);
         } catch (error) {
             debugError('标题搜索请求失败', error);
             traktLink.innerText = error.status ? '查询失败' : '网络错误';
