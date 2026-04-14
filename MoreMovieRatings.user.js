@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoreMovieRatings
 // @namespace    http://www.jayxon.com/
-// @version      0.7.5
+// @version      0.7.6
 // @description  Show IMDb ratings on Douban, and vice versa
 // @description:zh-CN 豆瓣和IMDb互相显示评分
 // @author       JayXon & DJ
@@ -125,6 +125,10 @@ function isEmpty(s) {
     return !s || s === 'N/A';
 }
 
+function formatDoubanVotes(num_raters) {
+    return num_raters.toString().replace(/,/g, '');
+}
+
 function insertDoubanRatingDiv(parent, title, rating, link, num_raters, histogram) {
     let star = (5 * Math.round(rating)).toString();
     if (star.length == 1)
@@ -152,7 +156,11 @@ function insertDoubanRatingDiv(parent, title, rating, link, num_raters, histogra
             <strong class="ll rating_num">${rating}</strong>
             <div class="rating_right">
                 <div class="ll bigstar${star}"></div>
-                <div style="clear: both" class="rating_sum"><a href=${link} target=_blank>${num_raters.toString().replace(/,/g, '')}人评价</a></div>
+                <div style="clear: both" class="rating_sum">
+                    <a href=${link} target=_blank class="rating_people">
+                        <span property="v:votes">${formatDoubanVotes(num_raters)}</span>人评价
+                    </a>
+                </div>
             </div>
         </div>` + histogram_html);
 }
@@ -164,6 +172,85 @@ function insertDoubanInfo(name, value) {
             info.insertAdjacentHTML('beforeend', '<br>');
         info.insertAdjacentHTML('beforeend', `<span class="pl">${name}:</span> ${value}<br>`);
     }
+}
+
+function ensureTrailingBreak(info) {
+    if (info.lastElementChild?.nodeName !== 'BR')
+        info.insertAdjacentHTML('beforeend', '<br>');
+}
+
+function createDoubanInfoLine(name, value) {
+    const line = document.createElement('span');
+    line.dataset.moreMovieRatingsInfo = name;
+    line.innerHTML = `<span class="pl">${name}:</span> ${value}<br>`;
+    return line;
+}
+
+function keepDoubanInfoAtEnd(line) {
+    const info = document.querySelector('#info');
+    if (!info)
+        return;
+
+    const moveToEnd = () => {
+        if (!line.isConnected || line.parentNode !== info)
+            return;
+        if (info.lastElementChild === line)
+            return;
+        line.remove();
+        ensureTrailingBreak(info);
+        info.appendChild(line);
+    };
+
+    if (!line.isConnected) {
+        ensureTrailingBreak(info);
+        info.appendChild(line);
+    } else {
+        moveToEnd();
+    }
+
+    const observerKey = `moreMovieRatingsObserver${line.dataset.moreMovieRatingsInfo}`;
+    if (!info[observerKey]) {
+        const observer = new MutationObserver(() => moveToEnd());
+        observer.observe(info, { childList: true });
+        info[observerKey] = observer;
+        setTimeout(() => {
+            observer.disconnect();
+            delete info[observerKey];
+        }, 5000);
+    }
+}
+
+function insertDoubanInfoAtEnd(name, value) {
+    const info = document.querySelector('#info');
+    if (!info)
+        return;
+
+    const existingLine = info.querySelector(`span[data-more-movie-ratings-info="${name}"]`);
+    const line = existingLine || createDoubanInfoLine(name, value);
+    if (existingLine)
+        existingLine.innerHTML = `<span class="pl">${name}:</span> ${value}<br>`;
+    keepDoubanInfoAtEnd(line);
+}
+
+function ensureOfficialSiteLineBreak() {
+    const labels = [...document.querySelectorAll('#info > span.pl')];
+    const officialSiteLabel = labels.find(label => label.textContent.trim() === '官方小站:');
+    if (!officialSiteLabel)
+        return;
+
+    let node = officialSiteLabel.nextSibling;
+    while (node && node.nodeType === Node.TEXT_NODE && !node.textContent.trim())
+        node = node.nextSibling;
+
+    if (!node || node.nodeName !== 'A')
+        return;
+
+    let nextNode = node.nextSibling;
+    while (nextNode && nextNode.nodeType === Node.TEXT_NODE && !nextNode.textContent.trim())
+        nextNode = nextNode.nextSibling;
+
+    if (!nextNode || nextNode.nodeName !== 'BR')
+        node.insertAdjacentHTML('afterend', '<br>');
 }
 
 function insertLetterboxdRating(ratings, title, title_href, rating, link, num_raters, histogram) {
@@ -246,6 +333,7 @@ function getIMDbIdFromInfoLabel(label_node) {
 (async () => {
     let host = location.hostname;
     if (host === 'movie.douban.com') {
+        ensureOfficialSiteLineBreak();
         let sectl = document.getElementById('interest_sectl');
         if (!sectl) {
             // No rating, might be censored, try to recover using API
@@ -395,7 +483,7 @@ function getIMDbIdFromInfoLabel(label_node) {
 
         // Box office
         if (!isEmpty(data.BoxOffice)) {
-            insertDoubanInfo('票房', data.BoxOffice);
+            insertDoubanInfoAtEnd('票房', data.BoxOffice);
         }
     } else if (host === 'www.douban.com') {
         // www.douban.com/personage/*
