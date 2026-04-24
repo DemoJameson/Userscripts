@@ -348,6 +348,32 @@
         if (color) button.style.backgroundColor = color;
     }
 
+    function clearAccessToken() {
+        accessToken = '';
+        GM_setValue(ACCESS_TOKEN_KEY, '');
+    }
+
+    function setButtonToConnect(button) {
+        setButtonState(button, '连接', null, '#9F42C6', false);
+        button.onclick = function () {
+            authenticateTrakt().catch(function (error) {
+                debugError('Trakt 授权流程失败', error);
+            });
+        };
+    }
+
+    function handleUnauthorized(button, requiresAuth) {
+        if (!button) return;
+
+        if (requiresAuth) {
+            clearAccessToken();
+            setButtonToConnect(button);
+            return;
+        }
+
+        setButtonState(button, '不可用', null, '#ccc', true);
+    }
+
     function traktHeaders(includeAuth) {
         const headers = {
             'Content-Type': 'application/json',
@@ -365,12 +391,7 @@
     function bindWatchlistButton(traktId, button) {
         if (!accessToken) {
             debugLog('未找到访问令牌，显示连接按钮');
-            setButtonState(button, '连接', null, '#9F42C6', false);
-            button.onclick = function () {
-                authenticateTrakt().catch(function (error) {
-                    debugError('Trakt 授权流程失败', error);
-                });
-            };
+            setButtonToConnect(button);
             return;
         }
 
@@ -450,6 +471,9 @@
         } catch (error) {
             debugError('Trakt TMDB 回退请求失败', error);
             traktLink.innerText = error.status ? 'Trakt 查询失败' : '网络错误';
+            if (error.status === 401) {
+                handleUnauthorized(button, false);
+            }
         }
     }
 
@@ -488,6 +512,9 @@
         } catch (error) {
             debugError('TMDB 查询请求失败', error);
             traktLink.innerText = error.status ? 'TMDB 查询失败' : '网络错误';
+            if (error.status === 401) {
+                handleUnauthorized(button, false);
+            }
         }
     }
 
@@ -526,6 +553,11 @@
             }
         } catch (error) {
             debugError('待看列表请求失败', error);
+            if (error.status === 401) {
+                handleUnauthorized(button, true);
+                return;
+            }
+
             button.disabled = false;
             setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
         }
@@ -564,12 +596,14 @@
             }
         } catch (error) {
             debugError('待看同步请求失败', error);
-            setButtonState(button, isAdding ? '+ 待看' : '- 移除', action, isAdding ? '#9F42C6' : '#666', false);
             if (error.status === 401) {
+                handleUnauthorized(button, true);
                 alert('Trakt token 可能已过期，请重新授权。');
             } else if (error.status) {
+                setButtonState(button, isAdding ? '+ 待看' : '- 移除', action, isAdding ? '#9F42C6' : '#666', false);
                 alert(`Trakt API 错误: ${error.status}\n${typeof error.data === 'string' ? error.data : JSON.stringify(error.data)}`);
             } else {
+                setButtonState(button, isAdding ? '+ 待看' : '- 移除', action, isAdding ? '#9F42C6' : '#666', false);
                 alert('同步 Trakt 时发生网络错误。');
             }
         }
@@ -654,6 +688,9 @@
             } catch (error) {
                 debugError('IMDb 搜索请求失败', error);
                 traktLink.innerText = error.status ? '查询失败' : '网络错误';
+                if (error.status === 401) {
+                    handleUnauthorized(btn, false);
+                }
                 if (error.status) return;
             }
         }
@@ -684,6 +721,9 @@
         } catch (error) {
             debugError('标题搜索请求失败', error);
             traktLink.innerText = error.status ? '查询失败' : '网络错误';
+            if (error.status === 401) {
+                handleUnauthorized(btn, false);
+            }
         }
     }
 
