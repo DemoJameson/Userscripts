@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         豆瓣影视添加 Trakt 待看按钮
 // @namespace    https://github.com/DemoJameson/Userscripts
-// @version      1.2.0
+// @version      1.2.1
 // @description  在豆瓣电影和剧集页面添加 Trakt 待看按钮，并提供可切换的调试日志。
 // @author       DemoJameson
 // @updateURL    https://raw.githubusercontent.com/DemoJameson/Userscripts/main/douban-trakt.user.js
@@ -13,6 +13,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
+// @grant        GM_addStyle
 // @connect      api.trakt.tv
 // @connect      api.tmdb.org
 // @connect      frodo.douban.com
@@ -150,6 +151,13 @@
             }
     `;
 
+    // 修复 PC 端豆瓣网页添加片单图标背景色不为透明
+    const DESKTOP_STYLE = `
+            .lnk-doulist-add i {
+                background-color: transparent !important;
+            }
+    `;
+
     const TRAKT_API_URL = 'https://api.trakt.tv';
     const TRAKT_CLIENT_ID = 'ae3b79dfd82d72aeab14337550d6762b9f161ddd5eea99e8ca1e2ddb0d484ecc';
     const TRAKT_CLIENT_SECRET = '045f13defe55c1562ef7df44a67d0762843649aadaf15b8314620f50051f5b46';
@@ -165,6 +173,10 @@
 
     let accessToken = GM_getValue(ACCESS_TOKEN_KEY, '');
     let debugEnabled = GM_getValue(DEBUG_KEY, false);
+
+    if (location.hostname === 'movie.douban.com') {
+        GM_addStyle(DESKTOP_STYLE);
+    }
 
     function injectMobileStyle() {
         if (document.getElementById('trakt-mobile-style')) return;
