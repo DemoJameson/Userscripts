@@ -1,18 +1,21 @@
 // ==UserScript==
 // @name         豆瓣影视添加 Trakt 待看按钮
 // @namespace    https://github.com/DemoJameson/Userscripts
-// @version      1.1.3
+// @version      1.2.0
 // @description  在豆瓣电影和剧集页面添加 Trakt 待看按钮，并提供可切换的调试日志。
 // @author       DemoJameson
 // @updateURL    https://raw.githubusercontent.com/DemoJameson/Userscripts/main/douban-trakt.user.js
 // @downloadURL  https://raw.githubusercontent.com/DemoJameson/Userscripts/main/douban-trakt.user.js
 // @match        https://movie.douban.com/subject/*
+// @match        https://m.douban.com/movie/subject/*
+// @match        https://trakt.tv/oauth/authorize*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @connect      api.trakt.tv
 // @connect      api.tmdb.org
+// @connect      frodo.douban.com
 // ==/UserScript==
 
 (function () {
@@ -35,16 +38,142 @@
         transition: background-color 0.2s;
     `;
 
+    const MOBILE_STYLE = `
+            .trakt-mobile-actions {
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+                gap: 10px;
+                margin: 5px 0 10px;
+            }
+
+            .trakt-mobile-actions .trakt-mark-btn,
+            .trakt-mobile-actions .trakt-open-btn {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 0;
+                color: #fff;
+                padding: .08rem .2rem;
+                border: 1px solid #9F42C6;
+                border-radius: .04rem;
+                background: #9F42C6;
+                box-sizing: border-box;
+                font-size: .12rem;
+                line-height: 1;
+                text-decoration: none;
+            }
+
+            .trakt-mobile-actions .trakt-mark-btn.is-disabled,
+            .trakt-mobile-actions .trakt-open-btn.is-disabled {
+                opacity: 0.55;
+                pointer-events: none;
+            }
+
+            .trakt-mobile-actions .trakt-mark-btn .trakt-mark-icon {
+                display: none;
+            }
+
+            .trakt-mobile-row {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                margin-top: 10px !important;
+                line-height: 1.3;
+                white-space: nowrap;
+            }
+
+            .trakt-mobile-row .pl {
+                display: inline;
+                margin-right: 0;
+                color: #111;
+                font-size: 12px;
+            }
+
+            #info .trakt-meta-inline,
+            .trakt-mobile-row .trakt-meta-inline {
+                display: inline-flex;
+                flex-wrap: nowrap;
+                align-items: center;
+                gap: 6px;
+                white-space: nowrap !important;
+                vertical-align: middle;
+                max-width: 100%;
+            }
+
+            #info .trakt-meta-inline .trakt-link,
+            .trakt-mobile-row .trakt-meta-inline .trakt-link {
+                color: #35b15c;
+                font-size: 12px;
+                line-height: 1.2;
+                text-decoration: none;
+                overflow-wrap: normal;
+                word-break: normal;
+            }
+
+            #info .trakt-meta-inline .trakt-watchlist-btn,
+            .trakt-mobile-row .trakt-meta-inline .trakt-watchlist-btn {
+                min-width: 0;
+                padding: 5px 12px !important;
+                margin-left: 0 !important;
+                flex: 0 0 auto;
+                border: 1px solid #e9e9e9 !important;
+                border-radius: 5px !important;
+                background: #fff !important;
+                color: #111 !important;
+                font-size: 12px !important;
+                font-weight: 600;
+                line-height: 1.2;
+                position: static !important;
+                top: auto !important;
+                box-shadow: none;
+            }
+
+            #info .trakt-meta-inline .trakt-watchlist-btn[data-action="add"],
+            .trakt-mobile-row .trakt-meta-inline .trakt-watchlist-btn[data-action="add"] {
+                border-color: #f3e1b4 !important;
+                color: #111 !important;
+            }
+
+            #info .trakt-meta-inline .trakt-watchlist-btn[data-action="remove"],
+            .trakt-mobile-row .trakt-meta-inline .trakt-watchlist-btn[data-action="remove"] {
+                border-color: #f3e1b4 !important;
+                color: #111 !important;
+            }
+
+            #info .trakt-meta-inline .trakt-watchlist-btn:disabled,
+            .trakt-mobile-row .trakt-meta-inline .trakt-watchlist-btn:disabled {
+                color: #999 !important;
+                background: #f5f5f5 !important;
+                border-color: #e5e5e5 !important;
+                box-shadow: none;
+            }
+    `;
+
     const TRAKT_API_URL = 'https://api.trakt.tv';
     const TRAKT_CLIENT_ID = 'ae3b79dfd82d72aeab14337550d6762b9f161ddd5eea99e8ca1e2ddb0d484ecc';
     const TRAKT_CLIENT_SECRET = '045f13defe55c1562ef7df44a67d0762843649aadaf15b8314620f50051f5b46';
     const TMDB_API_URL = 'https://api.tmdb.org';
     const TMDB_API_KEY = 'ebb2c093078553178d5d75c6d86d7bde';
+    const DOUBAN_FRODO_API_URL = 'https://frodo.douban.com/api/v2/movie';
+    const DOUBAN_FRODO_API_KEY = '0ac44ae016490db2204ce0a042db2916';
     const ACCESS_TOKEN_KEY = 'trakt_access_token';
     const DEBUG_KEY = 'trakt_debug_enabled';
+    const AUTH_STATE_KEY = 'trakt_auth_state';
+    const AUTH_CODE_WAIT_TIMEOUT = 180000;
+    const AUTH_CODE_POLL_INTERVAL = 500;
 
     let accessToken = GM_getValue(ACCESS_TOKEN_KEY, '');
     let debugEnabled = GM_getValue(DEBUG_KEY, false);
+
+    function injectMobileStyle() {
+        if (document.getElementById('trakt-mobile-style')) return;
+
+        const style = document.createElement('style');
+        style.id = 'trakt-mobile-style';
+        style.textContent = MOBILE_STYLE;
+        document.head.appendChild(style);
+    }
 
     function debugLog(message, details) {
         if (!debugEnabled) return;
@@ -74,6 +203,19 @@
             setDebugEnabled(!debugEnabled);
         }
     );
+
+    GM_registerMenuCommand('清除 Trakt Token', function () {
+        if (!accessToken) {
+            alert('当前没有已保存的 Trakt Token。');
+            return;
+        }
+
+        const confirmed = confirm('确定要清除当前保存的 Trakt Token 吗？清除后需要重新授权。');
+        if (!confirmed) return;
+
+        clearAccessToken();
+        location.reload();
+    });
 
     debugLog('脚本已加载', {
         url: location.href,
@@ -112,53 +254,86 @@
         return overlay;
     }
 
-    function showPinPrompt(callback) {
-        debugLog('显示 PIN 输入框');
-
-        const overlay = createModal(`
-            <h3 style="margin-top:0; color:#ED1C24;">Trakt 授权认证</h3>
-            <p style="font-size:14px; color:#333; margin-bottom:20px; line-height:1.5;">
-                已在新标签页打开 Trakt 授权页面。<br>
-                复制 PIN 码后，粘贴到这里。
-            </p>
-            <input
-                type="text"
-                id="trakt-pin-input"
-                style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; margin-bottom:20px; box-sizing:border-box; text-align:center; font-size:18px; letter-spacing:2px;"
-                placeholder="输入 PIN 码"
-            />
-            <div>
-                <button id="trakt-pin-cancel" style="padding:8px 20px; margin-right:10px; cursor:pointer; background:#eee; border:1px solid #ccc; border-radius:4px; color:#333; font-size:14px;">取消</button>
-                <button id="trakt-pin-submit" style="padding:8px 20px; cursor:pointer; background:#ED1C24; color:#fff; border:none; border-radius:4px; font-size:14px; font-weight:bold;">提交 PIN 码</button>
-            </div>
-        `);
-
-        const input = document.getElementById('trakt-pin-input');
-        input.focus();
-
-        document.getElementById('trakt-pin-submit').onclick = () => {
-            const pin = input.value.trim();
-            debugLog('已提交 PIN 输入框', { hasPin: Boolean(pin) });
-
-            if (!pin) {
-                alert('请输入有效的 PIN 码。');
-                return;
-            }
-
-            document.body.removeChild(overlay);
-            callback(pin);
-        };
-
-        document.getElementById('trakt-pin-cancel').onclick = () => {
-            debugLog('已取消 PIN 输入框');
-            document.body.removeChild(overlay);
-            callback(null);
-        };
+    function generateAuthSessionId() {
+        return `trakt-auth-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     }
 
-    function showPinPromptAsync() {
+    function getAuthState() {
+        return GM_getValue(AUTH_STATE_KEY, null);
+    }
+
+    function setAuthState(state) {
+        GM_setValue(AUTH_STATE_KEY, state);
+    }
+
+    function clearAuthState() {
+        GM_setValue(AUTH_STATE_KEY, null);
+    }
+
+    function waitForTraktAuthCode(sessionId) {
+        debugLog('显示自动授权等待框', { sessionId: sessionId });
+
         return new Promise(function (resolve) {
-            showPinPrompt(resolve);
+            let settled = false;
+            const overlay = createModal(`
+                <h3 style="margin-top:0; color:#ED1C24;">Trakt 授权认证</h3>
+                <p style="font-size:14px; color:#333; margin-bottom:16px; line-height:1.6;">
+                    已在新标签页打开 Trakt 授权页面。<br>
+                    请在该页面完成登录并授权，脚本会自动接收授权码。
+                </p>
+                <p id="trakt-auth-status" style="font-size:13px; color:#666; margin-bottom:20px;">
+                    正在等待授权完成...
+                </p>
+                <div>
+                    <button id="trakt-auth-cancel" style="padding:8px 20px; cursor:pointer; background:#eee; border:1px solid #ccc; border-radius:4px; color:#333; font-size:14px;">取消</button>
+                </div>
+            `);
+
+            const status = document.getElementById('trakt-auth-status');
+
+            function finish(result) {
+                if (settled) return;
+                settled = true;
+                clearInterval(timer);
+                clearTimeout(timeoutId);
+                if (overlay.parentNode) {
+                    document.body.removeChild(overlay);
+                }
+                resolve(result);
+            }
+
+            const timer = setInterval(function () {
+                const authState = getAuthState();
+                if (!authState || authState.sessionId !== sessionId) return;
+
+                if (authState.status === 'success' && authState.code) {
+                    debugLog('已收到跨页面授权码', { sessionId: sessionId });
+                    clearAuthState();
+                    finish(authState.code);
+                    return;
+                }
+
+                if (authState.status === 'error') {
+                    debugError('Trakt 授权页回传失败', authState);
+                    clearAuthState();
+                    finish({ error: authState.message || '授权页未能返回有效授权码。' });
+                }
+            }, AUTH_CODE_POLL_INTERVAL);
+
+            const timeoutId = setTimeout(function () {
+                debugError('等待授权码超时', { sessionId: sessionId });
+                if (status) {
+                    status.textContent = '等待超时，请重新打开授权流程。';
+                }
+                clearAuthState();
+                finish({ error: '等待 Trakt 授权超时，请重试。' });
+            }, AUTH_CODE_WAIT_TIMEOUT);
+
+            document.getElementById('trakt-auth-cancel').onclick = function () {
+                debugLog('已取消自动授权等待框', { sessionId: sessionId });
+                clearAuthState();
+                finish(null);
+            };
         });
     }
 
@@ -227,11 +402,22 @@
             return;
         }
 
+        const sessionId = generateAuthSessionId();
+        setAuthState({
+            sessionId: sessionId,
+            status: 'pending',
+            createdAt: Date.now()
+        });
+
         const authUrl = `https://trakt.tv/oauth/authorize?response_type=code&client_id=${TRAKT_CLIENT_ID}&redirect_uri=urn:ietf:wg:oauth:2.0:oob`;
         window.open(authUrl, '_blank');
 
-        const pin = await showPinPromptAsync();
-        if (!pin) return;
+        const authResult = await waitForTraktAuthCode(sessionId);
+        if (!authResult) return;
+        if (typeof authResult !== 'string') {
+            alert(authResult.error || '未能自动获取 Trakt 授权码。');
+            return;
+        }
 
         try {
             const data = await gmRequest({
@@ -241,7 +427,7 @@
                     'Content-Type': 'application/json'
                 },
                 data: JSON.stringify({
-                    code: pin,
+                    code: authResult,
                     client_id: TRAKT_CLIENT_ID,
                     client_secret: TRAKT_CLIENT_SECRET,
                     redirect_uri: 'urn:ietf:wg:oauth:2.0:oob',
@@ -279,6 +465,106 @@
         return imdbId;
     }
 
+    function getDoubanSubjectId() {
+        const match = location.pathname.match(/\/subject\/(\d+)/);
+        const subjectId = match ? match[1] : '';
+        debugLog('豆瓣条目 ID 提取结果', { subjectId: subjectId || null });
+        return subjectId;
+    }
+
+    function parseImdbIdFromFrodoHtml(html) {
+        if (!html) return null;
+
+        const container = document.createElement('div');
+        container.innerHTML = html;
+        const rows = container.querySelectorAll('tr');
+
+        for (const row of rows) {
+            const cells = row.querySelectorAll('td');
+            if (cells.length < 2) continue;
+
+            const label = cells[0].innerText?.trim();
+            const value = cells[1].innerText?.trim();
+            if (label !== 'IMDb') continue;
+
+            const match = value?.match(/tt\d+/);
+            if (match) {
+                debugLog('Frodo IMDb 提取结果', { imdbId: match[0] });
+                return match[0];
+            }
+        }
+
+        return null;
+    }
+
+    async function getMobileImdbId() {
+        const subjectId = getDoubanSubjectId();
+        if (!subjectId) return null;
+
+        const url = `${DOUBAN_FRODO_API_URL}/${subjectId}/desc?apikey=${DOUBAN_FRODO_API_KEY}`;
+
+        try {
+            const data = await gmRequest({
+                method: 'GET',
+                url: url,
+                headers: {
+                    'User-Agent': 'MicroMessenger/8.0.0',
+                    Referer: 'https://servicewechat.com/wx2f9b06c1de1ccfca'
+                }
+            });
+
+            const imdbId = parseImdbIdFromFrodoHtml(data?.html);
+            debugLog('移动端 Frodo 查询完成', {
+                subjectId: subjectId,
+                imdbId: imdbId || null
+            });
+            return imdbId;
+        } catch (error) {
+            debugError('移动端 Frodo 查询失败', error);
+            return null;
+        }
+    }
+
+    function cleanDoubanTitle(value) {
+        if (!value) return '';
+
+        return value
+            .replace(/\s*\(豆瓣\)\s*$/i, '')
+            .replace(/\s*-\s*(电影|电视剧)\s*-\s*豆瓣\s*$/i, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function getDisplayTitle() {
+        const title = cleanDoubanTitle(document.title);
+
+        debugLog('标题提取结果', { title: title || null });
+        return title || '';
+    }
+
+    function getReleaseYear() {
+        const mobileOriginalTitle = document.querySelector('.sub-original-title')?.innerText?.trim();
+        if (mobileOriginalTitle) {
+            const mobileMatch = mobileOriginalTitle.match(/[（(](\d{4})[)）]/);
+            if (mobileMatch) {
+                debugLog('年份提取结果', { year: mobileMatch[1], source: mobileOriginalTitle });
+                return mobileMatch[1];
+            }
+        }
+
+        const pcYear = document.querySelector('h1>span.year')?.innerText?.trim();
+        if (pcYear) {
+            const pcMatch = pcYear.match(/[（(](\d{4})[)）]/);
+            if (pcMatch) {
+                debugLog('年份提取结果', { year: pcMatch[1], source: pcYear });
+                return pcMatch[1];
+            }
+        }
+
+        debugLog('年份提取结果', { year: null });
+        return '';
+    }
+
     function parseChineseSeasonNumber(value) {
         const numerals = {
             '一': 1,
@@ -312,8 +598,7 @@
     }
 
     function getSeasonNumber() {
-        const titleText = document.querySelector('h1')?.innerText || document.title || '';
-        const normalizedTitle = titleText.replace(/\s+/g, ' ').trim();
+        const normalizedTitle = cleanDoubanTitle(document.title);
         const seasonPatterns = [
             /第\s*([0-9一二三四五六七八九十]+)\s*季/i,
             /\bseason\s+(\d+)\b/i,
@@ -342,10 +627,56 @@
     }
 
     function setButtonState(button, text, action, color, disabled) {
-        button.innerText = text;
-        button.disabled = Boolean(disabled);
-        if (action) button.dataset.action = action;
-        if (color) button.style.backgroundColor = color;
+        const label = button.querySelector('span') || button;
+        label.innerText = text;
+
+        if (action) {
+            button.dataset.action = action;
+        } else {
+            delete button.dataset.action;
+        }
+
+        const isDisabled = Boolean(disabled);
+        button.dataset.disabled = isDisabled ? 'true' : 'false';
+        button.setAttribute('aria-disabled', String(isDisabled));
+        button.classList.toggle('is-disabled', isDisabled);
+
+        if ('disabled' in button) {
+            button.disabled = isDisabled;
+        }
+
+        if (color && button.tagName === 'BUTTON') {
+            button.style.backgroundColor = color;
+        }
+    }
+
+    function setOpenButtonState(button, url, disabled) {
+        if (!button) return;
+
+        button.dataset.traktUrl = url || '';
+        button.dataset.disabled = disabled ? 'true' : 'false';
+        button.setAttribute('aria-disabled', String(Boolean(disabled)));
+        button.classList.toggle('is-disabled', Boolean(disabled));
+    }
+
+    function isMobileMarkButton(button) {
+        return button.classList.contains('trakt-mark-btn');
+    }
+
+    function getWatchlistLabel(button, state) {
+        const mobile = isMobileMarkButton(button);
+        const labels = {
+            connect: mobile ? '连接' : '连接',
+            unavailable: mobile ? '不可用' : '不可用',
+            noResource: mobile ? '无资源' : '无资源',
+            add: mobile ? '+待看' : '+ 待看',
+            remove: mobile ? '-移除' : '- 移除',
+            loading: mobile ? '读取中' : '读取中...',
+            matching: mobile ? '匹配中' : '匹配中...',
+            syncing: mobile ? '同步中' : '同步中...'
+        };
+
+        return labels[state];
     }
 
     function clearAccessToken() {
@@ -353,9 +684,21 @@
         GM_setValue(ACCESS_TOKEN_KEY, '');
     }
 
+    function consumeButtonEvent(event) {
+        if (!event) return;
+        event.preventDefault();
+        event.stopPropagation();
+    }
+
+    function stopButtonPropagation(event) {
+        if (!event) return;
+        event.stopPropagation();
+    }
+
     function setButtonToConnect(button) {
-        setButtonState(button, '连接', null, '#9F42C6', false);
-        button.onclick = function () {
+        setButtonState(button, getWatchlistLabel(button, 'connect'), null, '#9F42C6', false);
+        button.onclick = function (event) {
+            consumeButtonEvent(event);
             authenticateTrakt().catch(function (error) {
                 debugError('Trakt 授权流程失败', error);
             });
@@ -371,7 +714,7 @@
             return;
         }
 
-        setButtonState(button, '不可用', null, '#ccc', true);
+        setButtonState(button, getWatchlistLabel(button, 'unavailable'), null, '#ccc', true);
     }
 
     function traktHeaders(includeAuth) {
@@ -398,7 +741,8 @@
         debugLog('已找到访问令牌，开始检查待看状态');
         button.dataset.itemType = itemType;
         button.onclick = async function (event) {
-            event.preventDefault();
+            consumeButtonEvent(event);
+            if (button.dataset.disabled === 'true') return;
             try {
                 await toggleTraktWatchlist(traktId, button.dataset.itemType, button.dataset.action, button);
             } catch (error) {
@@ -410,12 +754,15 @@
         });
     }
 
-    function applyTraktMatch(data, traktLink, button) {
+    function applyTraktMatch(data, traktLink, button, openButton) {
         if (!data || data.length === 0) {
             debugLog('未找到 Trakt 匹配结果');
-            traktLink.innerText = '无匹配结果';
-            traktLink.href = '#';
-            setButtonState(button, '无资源', null, '#ccc', true);
+            if (traktLink) {
+                traktLink.innerText = '无匹配结果';
+                traktLink.href = '#';
+            }
+            setOpenButtonState(openButton, '', true);
+            setButtonState(button, getWatchlistLabel(button, 'noResource'), null, '#ccc', true);
             return false;
         }
 
@@ -438,21 +785,29 @@
             seasonNumber: seasonNumber
         });
 
-        traktLink.innerText = String(traktId);
-        traktLink.href = traktUrl;
+        if (traktLink) {
+            traktLink.innerText = String(traktId);
+            traktLink.href = traktUrl;
+        }
+        setOpenButtonState(openButton, traktUrl, false);
         bindWatchlistButton(traktId, itemType, button);
         return true;
     }
 
-    function showNoMatchState(traktLink, button) {
-        traktLink.innerText = '无匹配结果';
-        traktLink.href = '#';
-        setButtonState(button, '无资源', null, '#ccc', true);
+    function showNoMatchState(traktLink, button, openButton) {
+        if (traktLink) {
+            traktLink.innerText = '无匹配结果';
+            traktLink.href = '#';
+        }
+        setOpenButtonState(openButton, '', true);
+        setButtonState(button, getWatchlistLabel(button, 'noResource'), null, '#ccc', true);
     }
 
-    async function requestTraktByTmdbMatch(imdbId, tmdbId, tmdbType, traktLink, button) {
+    async function requestTraktByTmdbMatch(imdbId, tmdbId, tmdbType, traktLink, button, openButton) {
         const traktTmdbUrl = `${TRAKT_API_URL}/search/tmdb/${tmdbId}?type=${tmdbType}`;
-        traktLink.innerText = 'Trakt 回退匹配中...';
+        if (traktLink) traktLink.innerText = 'Trakt 回退匹配中...';
+        setButtonState(button, getWatchlistLabel(button, 'matching'), null, '#ccc', true);
+        setOpenButtonState(openButton, '', true);
         debugLog('TMDB 匹配成功，开始查询 Trakt', {
             imdbId: imdbId,
             tmdbId: tmdbId,
@@ -468,19 +823,22 @@
             });
 
             debugLog('已收到 Trakt TMDB 回退响应', traktData);
-            applyTraktMatch(traktData, traktLink, button);
+            applyTraktMatch(traktData, traktLink, button, openButton);
         } catch (error) {
             debugError('Trakt TMDB 回退请求失败', error);
-            traktLink.innerText = error.status ? 'Trakt 查询失败' : '网络错误';
+            if (traktLink) traktLink.innerText = error.status ? 'Trakt 查询失败' : '网络错误';
+            setOpenButtonState(openButton, '', true);
             if (error.status === 401) {
                 handleUnauthorized(button, false);
             }
         }
     }
 
-    async function requestTmdbMatch(imdbId, traktLink, button) {
+    async function requestTmdbMatch(imdbId, traktLink, button, openButton) {
         const tmdbFindUrl = `${TMDB_API_URL}/3/find/${imdbId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`;
-        traktLink.innerText = 'TMDB 查询中...';
+        if (traktLink) traktLink.innerText = 'TMDB 查询中...';
+        setButtonState(button, getWatchlistLabel(button, 'matching'), null, '#ccc', true);
+        setOpenButtonState(openButton, '', true);
         debugLog('IMDb 无匹配，开始查询 TMDB', {
             imdbId: imdbId,
             tmdbFindUrl: tmdbFindUrl
@@ -505,27 +863,28 @@
 
             if (!tmdbType || !tmdbId) {
                 debugLog('TMDB 未返回匹配结果', { imdbId: imdbId });
-                showNoMatchState(traktLink, button);
+                showNoMatchState(traktLink, button, openButton);
                 return;
             }
 
-            await requestTraktByTmdbMatch(imdbId, tmdbId, tmdbType, traktLink, button);
+            await requestTraktByTmdbMatch(imdbId, tmdbId, tmdbType, traktLink, button, openButton);
         } catch (error) {
             debugError('TMDB 查询请求失败', error);
-            traktLink.innerText = error.status ? 'TMDB 查询失败' : '网络错误';
+            if (traktLink) traktLink.innerText = error.status ? 'TMDB 查询失败' : '网络错误';
+            setOpenButtonState(openButton, '', true);
             if (error.status === 401) {
                 handleUnauthorized(button, false);
             }
         }
     }
 
-    async function searchTraktByTmdbId(imdbId, traktLink, button) {
-        await requestTmdbMatch(imdbId, traktLink, button);
+    async function searchTraktByTmdbId(imdbId, traktLink, button, openButton) {
+        await requestTmdbMatch(imdbId, traktLink, button, openButton);
     }
 
     async function checkWatchlistStatus(traktId, button) {
         debugLog('检查待看状态', { traktId: traktId });
-        setButtonState(button, '读取中...', null, null, true);
+        setButtonState(button, getWatchlistLabel(button, 'loading'), null, null, true);
 
         try {
             const watchlist = await gmRequest({
@@ -548,9 +907,9 @@
             });
 
             if (isFound) {
-                setButtonState(button, '- 移除', 'remove', '#666', false);
+                setButtonState(button, getWatchlistLabel(button, 'remove'), 'remove', '#666', false);
             } else {
-                setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
+                setButtonState(button, getWatchlistLabel(button, 'add'), 'add', '#9F42C6', false);
             }
         } catch (error) {
             debugError('待看列表请求失败', error);
@@ -560,7 +919,7 @@
             }
 
             button.disabled = false;
-            setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
+            setButtonState(button, getWatchlistLabel(button, 'add'), 'add', '#9F42C6', false);
         }
     }
 
@@ -578,7 +937,7 @@
             : { movies: [{ ids: { trakt: traktId } }] };
 
         debugLog('待看同步请求体已准备', payload);
-        setButtonState(button, '同步中...', action, null, true);
+        setButtonState(button, getWatchlistLabel(button, 'syncing'), action, null, true);
 
         try {
             const data = await gmRequest({
@@ -591,9 +950,9 @@
             debugLog('已收到待看同步响应', data);
 
             if (isAdding) {
-                setButtonState(button, '- 移除', 'remove', '#666', false);
+                setButtonState(button, getWatchlistLabel(button, 'remove'), 'remove', '#666', false);
             } else {
-                setButtonState(button, '+ 待看', 'add', '#9F42C6', false);
+                setButtonState(button, getWatchlistLabel(button, 'add'), 'add', '#9F42C6', false);
             }
         } catch (error) {
             debugError('待看同步请求失败', error);
@@ -601,10 +960,10 @@
                 handleUnauthorized(button, true);
                 alert('Trakt token 可能已过期，请重新授权。');
             } else if (error.status) {
-                setButtonState(button, isAdding ? '+ 待看' : '- 移除', action, isAdding ? '#9F42C6' : '#666', false);
+                setButtonState(button, isAdding ? getWatchlistLabel(button, 'add') : getWatchlistLabel(button, 'remove'), action, isAdding ? '#9F42C6' : '#666', false);
                 alert(`Trakt API 错误: ${error.status}\n${typeof error.data === 'string' ? error.data : JSON.stringify(error.data)}`);
             } else {
-                setButtonState(button, isAdding ? '+ 待看' : '- 移除', action, isAdding ? '#9F42C6' : '#666', false);
+                setButtonState(button, isAdding ? getWatchlistLabel(button, 'add') : getWatchlistLabel(button, 'remove'), action, isAdding ? '#9F42C6' : '#666', false);
                 alert('同步 Trakt 时发生网络错误。');
             }
         }
@@ -617,9 +976,9 @@
         return queryUrl;
     }
 
-    function buildTitleQueryUrl(traktLink, button, infoDiv) {
-        const rawTitle = document.title.replace(' (豆瓣)', '');
-        const yearStr = (document.querySelector('h1 span.year')?.innerText || '').replace(/[()]/g, '').trim();
+    function buildTitleQueryUrl(traktLink, button) {
+        const rawTitle = getDisplayTitle();
+        const yearStr = getReleaseYear();
 
         debugLog('使用标题回退搜索', {
             rawTitle: rawTitle,
@@ -627,51 +986,282 @@
         });
 
         if (!rawTitle) {
-            traktLink.innerText = '无有效信息';
-            setButtonState(button, '不可用', null, '#ccc', true);
+            if (traktLink) traktLink.innerText = '无有效信息';
+            setButtonState(button, getWatchlistLabel(button, 'unavailable'), null, '#ccc', true);
             return null;
         }
 
-        traktLink.innerText = '按名称搜索中...';
+        if (traktLink) traktLink.innerText = '按名称搜索中...';
+        setButtonState(button, getWatchlistLabel(button, 'matching'), null, '#ccc', true);
         const queryUrl = `${TRAKT_API_URL}/search/movie,show?query=${encodeURIComponent(rawTitle)}&years=${yearStr}`;
         debugLog('回退查询已准备', { queryUrl: queryUrl });
         return queryUrl;
     }
 
-    async function init() {
-        const infoDiv = document.getElementById('info');
-        if (!infoDiv) {
-            debugLog('未找到 #info，初始化终止');
+    function isMobilePage() {
+        return location.hostname === 'm.douban.com';
+    }
+
+    function getMobileMarkSection() {
+        return document.querySelector('section.subject-mark');
+    }
+
+    function waitForElement(getter, timeoutMs) {
+        return new Promise(function (resolve) {
+            const existing = getter();
+            if (existing) {
+                resolve(existing);
+                return;
+            }
+
+            const observer = new MutationObserver(function () {
+                const element = getter();
+                if (!element) return;
+                observer.disconnect();
+                clearTimeout(timer);
+                resolve(element);
+            });
+
+            const timer = setTimeout(function () {
+                observer.disconnect();
+                resolve(getter());
+            }, timeoutMs);
+
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        });
+    }
+
+    function getInjectionTarget() {
+        return document.getElementById('info')
+            || document.querySelector('.sub-detail')
+            || document.querySelector('.subject-header-wrap .sub-info')
+            || null;
+    }
+
+    function appendMetadataRow(container, traktLabel, traktMeta) {
+        if (container.id === 'info') {
+            container.appendChild(traktLabel);
+            container.appendChild(traktMeta);
             return;
+        }
+
+        const row = document.createElement('div');
+        row.className = 'trakt-mobile-row';
+        row.appendChild(traktLabel);
+        row.appendChild(traktMeta);
+        container.appendChild(row);
+    }
+
+    function createMobileWatchlistButton() {
+        const button = document.createElement('a');
+        button.className = 'trakt-mark-btn';
+        button.href = '#';
+        button.rel = 'nofollow';
+        button.innerHTML = '<i class="trakt-mark-icon"></i><span>读取中...</span>';
+        button.addEventListener('touchstart', stopButtonPropagation, true);
+        button.addEventListener('pointerdown', stopButtonPropagation, true);
+        return button;
+    }
+
+    function createMobileOpenButton() {
+        const button = document.createElement('a');
+        button.className = 'trakt-open-btn';
+        button.href = '#';
+        button.rel = 'nofollow';
+        button.innerHTML = '<span>Trakt</span>';
+        setOpenButtonState(button, '', true);
+        button.onclick = function (event) {
+            consumeButtonEvent(event);
+            if (button.dataset.disabled === 'true' || !button.dataset.traktUrl) return;
+            window.open(button.dataset.traktUrl, '_blank');
+        };
+        button.addEventListener('touchstart', stopButtonPropagation, true);
+        button.addEventListener('pointerdown', stopButtonPropagation, true);
+        return button;
+    }
+
+    function createMobileScoreActions() {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'trakt-mobile-actions';
+        return wrapper;
+    }
+
+    function isTraktOAuthPage() {
+        return location.hostname === 'trakt.tv' && location.pathname.startsWith('/oauth/authorize');
+    }
+
+    function extractAuthorizationCode() {
+        const searchParams = new URLSearchParams(location.search);
+        const searchCode = searchParams.get('code');
+        if (searchCode) return searchCode.trim();
+
+        const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''));
+        const hashCode = hashParams.get('code');
+        if (hashCode) return hashCode.trim();
+
+        const selectorCandidates = [
+            'code',
+            'pre',
+            'input[readonly]',
+            'input[type="text"]',
+            '[class*="code"]',
+            '[id*="code"]'
+        ];
+
+        for (const selector of selectorCandidates) {
+            const elements = document.querySelectorAll(selector);
+            for (const element of elements) {
+                const value = (element.value || element.textContent || '').trim();
+                if (/^[A-Za-z0-9_-]{8,}$/.test(value)) {
+                    return value;
+                }
+            }
+        }
+
+        const bodyText = document.body?.innerText || '';
+        const patterns = [
+            /authorization code[^A-Za-z0-9_-]*([A-Za-z0-9_-]{8,})/i,
+            /\bcode[^A-Za-z0-9_-]*([A-Za-z0-9_-]{8,})\b/i
+        ];
+
+        for (const pattern of patterns) {
+            const match = bodyText.match(pattern);
+            if (match?.[1]) {
+                return match[1].trim();
+            }
+        }
+
+        return '';
+    }
+
+    function initTraktOAuthBridge() {
+        const authState = getAuthState();
+        if (!authState?.sessionId || authState.status !== 'pending') return;
+
+        debugLog('Trakt 授权页桥接已启动', {
+            sessionId: authState.sessionId,
+            url: location.href
+        });
+
+        const publishCode = function () {
+            const code = extractAuthorizationCode();
+            if (!code) return false;
+
+            debugLog('Trakt 授权页已提取授权码', {
+                sessionId: authState.sessionId,
+                codeLength: code.length
+            });
+
+            setAuthState({
+                sessionId: authState.sessionId,
+                status: 'success',
+                code: code,
+                receivedAt: Date.now()
+            });
+
+            setTimeout(function () {
+                window.close();
+            }, 300);
+            return true;
+        };
+
+        if (publishCode()) return;
+
+        const observer = new MutationObserver(function () {
+            if (!publishCode()) return;
+            observer.disconnect();
+        });
+
+        observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            characterData: true
+        });
+
+        setTimeout(function () {
+            observer.disconnect();
+            const latestState = getAuthState();
+            if (!latestState || latestState.sessionId !== authState.sessionId || latestState.status !== 'pending') {
+                return;
+            }
+
+            debugError('Trakt 授权页未检测到授权码', {
+                sessionId: authState.sessionId,
+                url: location.href
+            });
+            setAuthState({
+                sessionId: authState.sessionId,
+                status: 'error',
+                message: 'Trakt 授权页未检测到授权码，请确认已点击 Allow。'
+            });
+        }, AUTH_CODE_WAIT_TIMEOUT);
+    }
+
+    async function init() {
+        const mobilePage = isMobilePage();
+        if (mobilePage) {
+            injectMobileStyle();
         }
 
         debugLog('开始初始化页面集成', {
             title: document.title
         });
 
-        const traktLabel = document.createElement('span');
-        traktLabel.className = 'pl';
-        traktLabel.innerText = 'Trakt: ';
-        infoDiv.appendChild(traktLabel);
+        let btn;
+        let traktLink = null;
+        let openBtn = null;
 
-        const traktMeta = document.createElement('span');
-        traktMeta.style.whiteSpace = 'nowrap';
-        infoDiv.appendChild(traktMeta);
+        if (mobilePage) {
+            const markSection = await waitForElement(getMobileMarkSection, 5000);
+            if (!markSection) {
+                debugLog('未找到移动端按钮区容器，初始化终止');
+                return;
+            }
 
-        const btn = document.createElement('button');
-        btn.style.cssText = BTN_STYLE;
-        btn.type = 'button';
-        setButtonState(btn, '读取中...', null, '#ccc', true);
+            btn = createMobileWatchlistButton();
+            setButtonState(btn, getWatchlistLabel(btn, 'loading'), null, null, true);
+            openBtn = createMobileOpenButton();
+            const actions = createMobileScoreActions();
+            actions.appendChild(openBtn);
+            actions.appendChild(btn);
+            markSection.parentNode.insertBefore(actions, markSection);
+        } else {
+            const injectionTarget = getInjectionTarget();
+            if (!injectionTarget) {
+                debugLog('未找到可注入容器，初始化终止');
+                return;
+            }
 
-        const traktLink = document.createElement('a');
-        traktLink.target = '_blank';
-        traktMeta.appendChild(traktLink);
-        traktMeta.appendChild(btn);
+            const traktLabel = document.createElement('span');
+            traktLabel.className = 'pl';
+            traktLabel.innerText = 'Trakt: ';
 
-        const imdbId = getImdbId();
+            const traktMeta = document.createElement('span');
+            traktMeta.className = 'trakt-meta-inline';
+            traktMeta.style.whiteSpace = 'nowrap';
+            appendMetadataRow(injectionTarget, traktLabel, traktMeta);
+
+            btn = document.createElement('button');
+            btn.className = 'trakt-watchlist-btn';
+            btn.style.cssText = BTN_STYLE;
+            btn.type = 'button';
+            setButtonState(btn, getWatchlistLabel(btn, 'loading'), null, '#ccc', true);
+
+            traktLink = document.createElement('a');
+            traktLink.className = 'trakt-link';
+            traktLink.target = '_blank';
+            traktMeta.appendChild(traktLink);
+            traktMeta.appendChild(btn);
+        }
+
+        const imdbId = mobilePage ? await getMobileImdbId() : getImdbId();
         const imdbQueryUrl = buildImdbQueryUrl(imdbId);
         if (imdbQueryUrl) {
-            traktLink.innerText = '精确匹配中...';
+            if (traktLink) traktLink.innerText = '精确匹配中...';
+            setButtonState(btn, getWatchlistLabel(btn, 'matching'), null, '#ccc', true);
 
             try {
                 const data = await gmRequest({
@@ -683,12 +1273,13 @@
                 debugLog('已收到 IMDb 搜索响应', data);
 
                 if (data && data.length > 0) {
-                    applyTraktMatch(data, traktLink, btn);
+                    applyTraktMatch(data, traktLink, btn, openBtn);
                     return;
                 }
             } catch (error) {
                 debugError('IMDb 搜索请求失败', error);
-                traktLink.innerText = error.status ? '查询失败' : '网络错误';
+                if (traktLink) traktLink.innerText = error.status ? '查询失败' : '网络错误';
+                setOpenButtonState(openBtn, '', true);
                 if (error.status === 401) {
                     handleUnauthorized(btn, false);
                 }
@@ -696,7 +1287,7 @@
             }
         }
 
-        const titleQueryUrl = buildTitleQueryUrl(traktLink, btn, infoDiv);
+        const titleQueryUrl = buildTitleQueryUrl(traktLink, btn);
         if (!titleQueryUrl) return;
 
         try {
@@ -709,19 +1300,20 @@
             debugLog('已收到标题搜索响应', data);
 
             if (data && data.length > 0) {
-                applyTraktMatch(data, traktLink, btn);
+                applyTraktMatch(data, traktLink, btn, openBtn);
                 return;
             }
 
             if (imdbId) {
-                await searchTraktByTmdbId(imdbId, traktLink, btn);
+                await searchTraktByTmdbId(imdbId, traktLink, btn, openBtn);
                 return;
             }
 
-            applyTraktMatch(data, traktLink, btn);
+            applyTraktMatch(data, traktLink, btn, openBtn);
         } catch (error) {
             debugError('标题搜索请求失败', error);
-            traktLink.innerText = error.status ? '查询失败' : '网络错误';
+            if (traktLink) traktLink.innerText = error.status ? '查询失败' : '网络错误';
+            setOpenButtonState(openBtn, '', true);
             if (error.status === 401) {
                 handleUnauthorized(btn, false);
             }
@@ -729,6 +1321,11 @@
     }
 
     window.addEventListener('load', function () {
+        if (isTraktOAuthPage()) {
+            initTraktOAuthBridge();
+            return;
+        }
+
         init().catch(function (error) {
             debugError('初始化失败', error);
         });
