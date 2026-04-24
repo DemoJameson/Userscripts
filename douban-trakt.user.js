@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         豆瓣影视添加 Trakt 待看按钮
 // @namespace    https://github.com/DemoJameson/Userscripts
-// @version      1.1.2
+// @version      1.1.3
 // @description  在豆瓣电影和剧集页面添加 Trakt 待看按钮，并提供可切换的调试日志。
 // @author       DemoJameson
 // @updateURL    https://raw.githubusercontent.com/DemoJameson/Userscripts/main/douban-trakt.user.js
@@ -388,7 +388,7 @@
         return headers;
     }
 
-    function bindWatchlistButton(traktId, button) {
+    function bindWatchlistButton(traktId, itemType, button) {
         if (!accessToken) {
             debugLog('未找到访问令牌，显示连接按钮');
             setButtonToConnect(button);
@@ -396,10 +396,11 @@
         }
 
         debugLog('已找到访问令牌，开始检查待看状态');
+        button.dataset.itemType = itemType;
         button.onclick = async function (event) {
             event.preventDefault();
             try {
-                await toggleTraktWatchlist(traktId, button.dataset.action, button);
+                await toggleTraktWatchlist(traktId, button.dataset.itemType, button.dataset.action, button);
             } catch (error) {
                 debugError('切换待看状态失败', error);
             }
@@ -439,7 +440,7 @@
 
         traktLink.innerText = String(traktId);
         traktLink.href = traktUrl;
-        bindWatchlistButton(traktId, button);
+        bindWatchlistButton(traktId, itemType, button);
         return true;
     }
 
@@ -563,18 +564,18 @@
         }
     }
 
-    async function toggleTraktWatchlist(traktId, action, button) {
+    async function toggleTraktWatchlist(traktId, itemType, action, button) {
         debugLog('切换待看状态', {
             traktId: traktId,
+            itemType: itemType,
             action: action
         });
 
         const isAdding = action === 'add';
         const endpoint = isAdding ? '/sync/watchlist' : '/sync/watchlist/remove';
-        const payload = {
-            movies: [{ ids: { trakt: traktId } }],
-            shows: [{ ids: { trakt: traktId } }]
-        };
+        const payload = itemType === 'show'
+            ? { shows: [{ ids: { trakt: traktId } }] }
+            : { movies: [{ ids: { trakt: traktId } }] };
 
         debugLog('待看同步请求体已准备', payload);
         setButtonState(button, '同步中...', action, null, true);
