@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoreMovieRatings
 // @namespace    http://www.jayxon.com/
-// @version      0.7.6
+// @version      0.8.0
 // @description  Show IMDb ratings on Douban, and vice versa
 // @description:zh-CN 豆瓣和IMDb互相显示评分
 // @author       JayXon & DJ
@@ -14,6 +14,8 @@
 // @connect      movie.douban.com
 // @connect      p.media-imdb.com
 // @connect      www.omdbapi.com
+// @connect      api.themoviedb.org
+// @connect      seriesgraph.com
 // @downloadURL  https://raw.githubusercontent.com/DemoJameson/Userscripts/main/MoreMovieRatings.user.js
 // @updateURL    https://raw.githubusercontent.com/DemoJameson/Userscripts/main/MoreMovieRatings.user.js
 // ==/UserScript==
@@ -92,6 +94,157 @@ async function getIMDbInfo(id) {
         }
     }
     return omdb_data;
+}
+
+function cleanDoubanTitle(value) {
+    if (!value) return '';
+
+    return value
+        .replace(/\s*\(豆瓣\)\s*$/i, '')
+        .replace(/\s*-\s*(电影|电视剧)\s*-\s*豆瓣\s*$/i, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function parseChineseSeasonNumber(value) {
+    const numerals = {
+        '一': 1,
+        '二': 2,
+        '三': 3,
+        '四': 4,
+        '五': 5,
+        '六': 6,
+        '七': 7,
+        '八': 8,
+        '九': 9,
+        '十': 10
+    };
+
+    if (!value) return null;
+    if (/^\d+$/.test(value)) return Number(value);
+    if (numerals[value]) return numerals[value];
+    const standardMatch = value.match(/^([一二三四五六七八九]?)(十)([一二三四五六七八九]?)$/);
+    if (standardMatch) {
+        const tens = standardMatch[1] ? numerals[standardMatch[1]] : 1;
+        const ones = standardMatch[3] ? numerals[standardMatch[3]] : 0;
+        return tens * 10 + ones;
+    }
+
+    return null;
+}
+
+function getDoubanSeasonNumber() {
+    if (location.hostname !== 'movie.douban.com')
+        return null;
+
+    const infoLabels = [...document.querySelectorAll('#info > span.pl')];
+    const seasonLabel = infoLabels.find(label => label.textContent.trim() === '季数:');
+    if (seasonLabel) {
+        let node = seasonLabel.nextSibling;
+        while (node && node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) {
+            node = node.nextSibling;
+        }
+
+        const seasonText = node?.textContent?.trim();
+        if (/^\d+$/.test(seasonText)) {
+            return Number(seasonText);
+        }
+    }
+
+    const normalizedTitle = cleanDoubanTitle(document.title);
+    const seasonPatterns = [
+        /第\s*([0-9一二三四五六七八九十]+)\s*季/i,
+        /\bseason\s+(\d+)\b/i,
+        /\bs(\d{1,2})\b/i
+    ];
+
+    for (const pattern of seasonPatterns) {
+        const match = normalizedTitle.match(pattern);
+        if (!match) continue;
+
+        const seasonNumber = parseChineseSeasonNumber(match[1]);
+        if (seasonNumber)
+            return seasonNumber;
+    }
+
+    return null;
+}
+
+async function getTMDBFindResult(imdbId) {
+    const url = `https://api.themoviedb.org/3/find/${imdbId}?api_key=ebb2c093078553178d5d75c6d86d7bde&external_source=imdb_id`;
+    return await getJSON_GM(url);
+}
+
+async function getSeasonRatingsByTMDBId(tmdbId) {
+    return await getJSON_GM(`https://seriesgraph.com/api/shows/${tmdbId}/season-ratings`);
+}
+
+async function getTVExternalIdsByTMDBId(tmdbId) {
+    return await getJSON_GM(`https://api.themoviedb.org/3/tv/${tmdbId}/external_ids?api_key=ebb2c093078553178d5d75c6d86d7bde`);
+}
+
+function buildSeasonIMDbRatingInfo(season) {
+    const episodes = season?.episodes || [];
+    const ratedEpisodes = episodes.filter(episode =>
+        typeof episode?.vote_average === 'number' && !Number.isNaN(episode.vote_average)
+    );
+    if (!ratedEpisodes.length)
+        return null;
+
+    const totalRating = ratedEpisodes.reduce((sum, episode) => sum + episode.vote_average, 0);
+    const totalVotes = ratedEpisodes.reduce((sum, episode) => sum + (Number(episode.num_votes) || 0), 0);
+
+    return {
+        imdbRating: totalRating / ratedEpisodes.length,
+        imdbVotes: totalVotes,
+        seasonEpisodeCount: ratedEpisodes.length,
+        seasonTotalEpisodeCount: episodes.length
+    };
+}
+
+function hasRatedEpisodes(season) {
+    return Array.isArray(season?.episodes) && season.episodes.some(episode =>
+        typeof episode?.vote_average === 'number' && !Number.isNaN(episode.vote_average)
+    );
+}
+
+async function getDoubanSeasonIMDbInfo(id) {
+    const seasonNumber = getDoubanSeasonNumber();
+    if (!seasonNumber)
+        return null;
+
+    const tmdbData = await getTMDBFindResult(id);
+    const tmdbId = tmdbData?.tv_results?.[0]?.id || tmdbData?.tv_episode_results?.[0]?.show_id;
+    if (!tmdbId)
+        return null;
+
+    const seasons = await getSeasonRatingsByTMDBId(tmdbId);
+    if (!Array.isArray(seasons) || !seasons.length)
+        return null;
+
+    const seasonInfo = buildSeasonIMDbRatingInfo(seasons[seasonNumber - 1]);
+    if (!seasonInfo)
+        return null;
+
+    let showImdbId = id;
+    if (seasonNumber > 1) {
+        const externalIds = await getTVExternalIdsByTMDBId(tmdbId);
+        showImdbId = externalIds?.imdb_id || id;
+    }
+    const hasLaterRatedSeason = seasons.slice(1).some(hasRatedEpisodes);
+    const imdbLink = !hasLaterRatedSeason
+        ? `https://www.imdb.com/title/${showImdbId}/`
+        : `https://www.imdb.com/title/${showImdbId}/episodes/?season=${seasonNumber}`;
+    const imdbRatingLink = !hasLaterRatedSeason
+        ? `https://www.imdb.com/title/${showImdbId}/ratings/`
+        : `https://www.imdb.com/title/${showImdbId}/episodes/?season=${seasonNumber}`;
+
+    return {
+        ...seasonInfo,
+        showImdbId,
+        imdbLink,
+        imdbRatingLink
+    };
 }
 
 async function getDoubanAPI(query) {
@@ -330,6 +483,26 @@ function getIMDbIdFromInfoLabel(label_node) {
     }
 }
 
+function updateDoubanIMDbLink(labelNode, imdbLink) {
+    if (!labelNode || !imdbLink)
+        return;
+
+    let node = labelNode.nextSibling;
+    while (node && node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) {
+        node = node.nextSibling;
+    }
+    if (!node || node.nodeType !== Node.ELEMENT_NODE)
+        return;
+
+    const element = node;
+    const link = element.matches('a') ? element : element.querySelector('a');
+    if (!link)
+        return;
+
+    link.href = imdbLink;
+    link.target = '_blank';
+}
+
 (async () => {
     let host = location.hostname;
     if (host === 'movie.douban.com') {
@@ -375,10 +548,13 @@ function getIMDbIdFromInfoLabel(label_node) {
             console.log('IMDb id not available');
             return;
         }
-
-        const data = await getIMDbInfo(id);
+        const [seasonData, imdbData] = await Promise.all([getDoubanSeasonIMDbInfo(id), getIMDbInfo(id)]);
+        const data = seasonData ? { ...imdbData, ...seasonData } : imdbData;
         if (!data)
             return;
+        if (seasonData?.imdbLink) {
+            updateDoubanIMDbLink(imdb_text, seasonData.imdbLink);
+        }
         if (isEmpty(data.imdbRating) && isEmpty(data.Metascore)) {
             console.log('MoreMovieRatings: No ratings found');
             return;
@@ -401,7 +577,7 @@ function getIMDbIdFromInfoLabel(label_node) {
             interest_sect_level.style.width = '488px';
         // IMDb
         if (!isEmpty(data.imdbRating)) {
-            insertDoubanRatingDiv(ratings, 'IMDb评分', data.imdbRating, `https://www.imdb.com/title/${id}/ratings`, data.imdbVotes, data.histogram);
+            insertDoubanRatingDiv(ratings, 'IMDb评分', data.imdbRating, data.imdbRatingLink || `https://www.imdb.com/title/${id}/ratings`, data.imdbVotes, data.histogram);
             // IMDb Top 250
             if (!isEmpty(data.topRank) && data.topRank <= 250) {
                 // inject css if needed

@@ -594,16 +594,11 @@
         if (!value) return null;
         if (/^\d+$/.test(value)) return Number(value);
         if (numerals[value]) return numerals[value];
-        if (value === '十一') return 11;
-        if (value === '十二') return 12;
-        if (value.startsWith('十') && numerals[value.slice(1)]) {
-            return 10 + numerals[value.slice(1)];
-        }
-        if (value.endsWith('十') && numerals[value[0]]) {
-            return numerals[value[0]] * 10;
-        }
-        if (value.length === 2 && numerals[value[0]] && numerals[value[1]]) {
-            return numerals[value[0]] * 10 + numerals[value[1]];
+        const standardMatch = value.match(/^([一二三四五六七八九]?)(十)([一二三四五六七八九]?)$/);
+        if (standardMatch) {
+            const tens = standardMatch[1] ? numerals[standardMatch[1]] : 1;
+            const ones = standardMatch[3] ? numerals[standardMatch[3]] : 0;
+            return tens * 10 + ones;
         }
 
         return null;
