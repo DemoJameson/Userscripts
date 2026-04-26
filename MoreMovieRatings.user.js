@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoreMovieRatings
 // @namespace    http://www.jayxon.com/
-// @version      0.8.0
+// @version      0.8.1
 // @description  Show IMDb ratings on Douban, and vice versa
 // @description:zh-CN 豆瓣和IMDb互相显示评分
 // @author       JayXon & DJ
@@ -282,7 +282,7 @@ function formatDoubanVotes(num_raters) {
     return num_raters.toString().replace(/,/g, '');
 }
 
-function insertDoubanRatingDiv(parent, title, rating, link, num_raters, histogram) {
+function insertDoubanRatingDiv(parent, title, rating, link, num_raters, histogram, votesLabel = '人评价') {
     let star = (5 * Math.round(rating)).toString();
     if (star.length == 1)
         star = '0' + star;
@@ -311,7 +311,7 @@ function insertDoubanRatingDiv(parent, title, rating, link, num_raters, histogra
                 <div class="ll bigstar${star}"></div>
                 <div style="clear: both" class="rating_sum">
                     <a href=${link} target=_blank class="rating_people">
-                        <span property="v:votes">${formatDoubanVotes(num_raters)}</span>人评价
+                        <span property="v:votes">${formatDoubanVotes(num_raters)}</span>${votesLabel}
                     </a>
                 </div>
             </div>
@@ -577,7 +577,15 @@ function updateDoubanIMDbLink(labelNode, imdbLink) {
             interest_sect_level.style.width = '488px';
         // IMDb
         if (!isEmpty(data.imdbRating)) {
-            insertDoubanRatingDiv(ratings, 'IMDb评分', data.imdbRating, data.imdbRatingLink || `https://www.imdb.com/title/${id}/ratings`, data.imdbVotes, data.histogram);
+            insertDoubanRatingDiv(
+                ratings,
+                'IMDb评分',
+                data.imdbRating,
+                data.imdbRatingLink || `https://www.imdb.com/title/${id}/ratings`,
+                data.imdbVotes,
+                data.histogram,
+                seasonData ? '个评价' : '人评价'
+            );
             // IMDb Top 250
             if (!isEmpty(data.topRank) && data.topRank <= 250) {
                 // inject css if needed
