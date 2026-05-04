@@ -1,14 +1,13 @@
 // ==UserScript==
 // @name         豆瓣影视添加 Trakt 待看按钮
 // @namespace    https://github.com/DemoJameson/Userscripts
-// @version      1.2.1
+// @version      1.3.1
 // @description  在豆瓣电影和剧集页面添加 Trakt 待看按钮，并提供可切换的调试日志。
 // @author       DemoJameson
 // @updateURL    https://raw.githubusercontent.com/DemoJameson/Userscripts/main/douban-trakt.user.js
 // @downloadURL  https://raw.githubusercontent.com/DemoJameson/Userscripts/main/douban-trakt.user.js
 // @match        https://movie.douban.com/subject/*
 // @match        https://m.douban.com/movie/subject/*
-// @match        https://trakt.tv/oauth/authorize*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -166,12 +165,15 @@
     const DOUBAN_FRODO_API_URL = 'https://frodo.douban.com/api/v2/movie';
     const DOUBAN_FRODO_API_KEY = '0ac44ae016490db2204ce0a042db2916';
     const ACCESS_TOKEN_KEY = 'trakt_access_token';
+    const REFRESH_TOKEN_KEY = 'trakt_refresh_token';
+    const TOKEN_EXPIRES_AT_KEY = 'trakt_token_expires_at';
     const DEBUG_KEY = 'trakt_debug_enabled';
-    const AUTH_STATE_KEY = 'trakt_auth_state';
-    const AUTH_CODE_WAIT_TIMEOUT = 180000;
-    const AUTH_CODE_POLL_INTERVAL = 500;
+    const DEVICE_AUTH_TIMEOUT = 180000;
+    const DEVICE_AUTH_FALLBACK_INTERVAL = 5000;
 
     let accessToken = GM_getValue(ACCESS_TOKEN_KEY, '');
+    let refreshToken = GM_getValue(REFRESH_TOKEN_KEY, '');
+    let tokenExpiresAt = Number(GM_getValue(TOKEN_EXPIRES_AT_KEY, 0)) || 0;
     let debugEnabled = GM_getValue(DEBUG_KEY, false);
 
     if (location.hostname === 'movie.douban.com') {
@@ -266,87 +268,159 @@
         return overlay;
     }
 
-    function generateAuthSessionId() {
-        return `trakt-auth-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    function removeModal(overlay) {
+        if (overlay?.parentNode) {
+            document.body.removeChild(overlay);
+        }
     }
 
-    function getAuthState() {
-        return GM_getValue(AUTH_STATE_KEY, null);
+    function closePopupWindow(popupWindow) {
+        if (!popupWindow || popupWindow.closed) return;
+
+        try {
+            popupWindow.close();
+        } catch (error) {
+            debugError('关闭 Trakt 授权窗口失败', error);
+        }
     }
 
-    function setAuthState(state) {
-        GM_setValue(AUTH_STATE_KEY, state);
-    }
+    function saveTraktTokens(data) {
+        accessToken = data.access_token || '';
+        refreshToken = data.refresh_token || '';
+        tokenExpiresAt = data.created_at && data.expires_in
+            ? (Number(data.created_at) + Number(data.expires_in)) * 1000
+            : 0;
 
-    function clearAuthState() {
-        GM_setValue(AUTH_STATE_KEY, null);
-    }
+        GM_setValue(ACCESS_TOKEN_KEY, accessToken);
+        GM_setValue(REFRESH_TOKEN_KEY, refreshToken);
+        GM_setValue(TOKEN_EXPIRES_AT_KEY, tokenExpiresAt);
 
-    function waitForTraktAuthCode(sessionId) {
-        debugLog('显示自动授权等待框', { sessionId: sessionId });
-
-        return new Promise(function (resolve) {
-            let settled = false;
-            const overlay = createModal(`
-                <h3 style="margin-top:0; color:#ED1C24;">Trakt 授权认证</h3>
-                <p style="font-size:14px; color:#333; margin-bottom:16px; line-height:1.6;">
-                    已在新标签页打开 Trakt 授权页面。<br>
-                    请在该页面完成登录并授权，脚本会自动接收授权码。
-                </p>
-                <p id="trakt-auth-status" style="font-size:13px; color:#666; margin-bottom:20px;">
-                    正在等待授权完成...
-                </p>
-                <div>
-                    <button id="trakt-auth-cancel" style="padding:8px 20px; cursor:pointer; background:#eee; border:1px solid #ccc; border-radius:4px; color:#333; font-size:14px;">取消</button>
-                </div>
-            `);
-
-            const status = document.getElementById('trakt-auth-status');
-
-            function finish(result) {
-                if (settled) return;
-                settled = true;
-                clearInterval(timer);
-                clearTimeout(timeoutId);
-                if (overlay.parentNode) {
-                    document.body.removeChild(overlay);
-                }
-                resolve(result);
-            }
-
-            const timer = setInterval(function () {
-                const authState = getAuthState();
-                if (!authState || authState.sessionId !== sessionId) return;
-
-                if (authState.status === 'success' && authState.code) {
-                    debugLog('已收到跨页面授权码', { sessionId: sessionId });
-                    clearAuthState();
-                    finish(authState.code);
-                    return;
-                }
-
-                if (authState.status === 'error') {
-                    debugError('Trakt 授权页回传失败', authState);
-                    clearAuthState();
-                    finish({ error: authState.message || '授权页未能返回有效授权码。' });
-                }
-            }, AUTH_CODE_POLL_INTERVAL);
-
-            const timeoutId = setTimeout(function () {
-                debugError('等待授权码超时', { sessionId: sessionId });
-                if (status) {
-                    status.textContent = '等待超时，请重新打开授权流程。';
-                }
-                clearAuthState();
-                finish({ error: '等待 Trakt 授权超时，请重试。' });
-            }, AUTH_CODE_WAIT_TIMEOUT);
-
-            document.getElementById('trakt-auth-cancel').onclick = function () {
-                debugLog('已取消自动授权等待框', { sessionId: sessionId });
-                clearAuthState();
-                finish(null);
-            };
+        debugLog('Trakt token 已保存', {
+            hasAccessToken: Boolean(accessToken),
+            hasRefreshToken: Boolean(refreshToken),
+            tokenExpiresAt: tokenExpiresAt || null
         });
+    }
+
+    function getDeviceAuthErrorCode(error) {
+        const value = error?.data?.error || error?.data?.error_code || error?.data?.code;
+        if (typeof value === 'string' && value) {
+            return value;
+        }
+
+        switch (error?.status) {
+            case 400:
+                return 'authorization_pending';
+            case 404:
+                return 'invalid_device_code';
+            case 409:
+                return 'already_used';
+            case 410:
+                return 'expired_token';
+            case 418:
+                return 'access_denied';
+            case 429:
+                return 'slow_down';
+            default:
+                return '';
+        }
+    }
+
+    function getDeviceAuthErrorMessage(error) {
+        const description = error?.data?.error_description;
+        if (typeof description === 'string' && description.trim()) {
+            return description.trim();
+        }
+
+        const code = getDeviceAuthErrorCode(error);
+        if (code === 'access_denied') {
+            return '你已在 Trakt 拒绝授权，请重新发起连接。';
+        }
+
+        if (code === 'expired_token') {
+            return 'Trakt 用户码已过期，请重新发起连接。';
+        }
+
+        if (code === 'invalid_device_code') {
+            return 'Trakt 返回了无效的设备码，请重新发起连接。';
+        }
+
+        if (code === 'already_used') {
+            return '这个 Trakt 设备码已经使用过，请重新发起连接。';
+        }
+
+        if (error?.status) {
+            return `授权失败：${error.status}`;
+        }
+
+        return '授权过程中发生网络错误。';
+    }
+
+    async function wait(ms) {
+        await new Promise(function (resolve) {
+            setTimeout(resolve, ms);
+        });
+    }
+
+    async function pollForDeviceToken(deviceCode, intervalSeconds, expiresInSeconds, onStatusChange, isCancelled) {
+        const intervalMs = Math.max(Number(intervalSeconds) || 0, 1) * 1000;
+        const startedAt = Date.now();
+        const expiresMs = Number(expiresInSeconds) > 0
+            ? Number(expiresInSeconds) * 1000
+            : DEVICE_AUTH_TIMEOUT;
+
+        while (Date.now() - startedAt < expiresMs) {
+            if (isCancelled()) return null;
+
+            try {
+                const data = await gmRequest({
+                    method: 'POST',
+                    url: `${TRAKT_API_URL}/oauth/device/token`,
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    data: JSON.stringify({
+                        code: deviceCode,
+                        client_id: TRAKT_CLIENT_ID,
+                        client_secret: TRAKT_CLIENT_SECRET
+                    })
+                });
+
+                debugLog('设备码换取 token 成功', data);
+                return data;
+            } catch (error) {
+                const errorCode = getDeviceAuthErrorCode(error);
+                debugLog('设备码轮询响应', {
+                    status: error.status || null,
+                    errorCode: errorCode || null,
+                    data: error.data || null
+                });
+
+                if (errorCode === 'authorization_pending') {
+                    onStatusChange('正在等待你在 Trakt 完成确认...');
+                    await wait(intervalMs);
+                    continue;
+                }
+
+                if (errorCode === 'slow_down') {
+                    onStatusChange('Trakt 要求放慢轮询频率，继续等待中...');
+                    await wait(intervalMs + 5000);
+                    continue;
+                }
+
+                if (errorCode === 'expired_token' || errorCode === 'access_denied') {
+                    throw new Error(getDeviceAuthErrorMessage(error));
+                }
+
+                if (!error.status) {
+                    throw new Error('授权过程中发生网络错误。');
+                }
+
+                throw new Error(getDeviceAuthErrorMessage(error));
+            }
+        }
+
+        throw new Error('等待 Trakt 授权超时，请重试。');
     }
 
     function parseResponseBody(responseText) {
@@ -414,56 +488,107 @@
             return;
         }
 
-        const sessionId = generateAuthSessionId();
-        setAuthState({
-            sessionId: sessionId,
-            status: 'pending',
-            createdAt: Date.now()
-        });
-
-        const authUrl = `https://trakt.tv/oauth/authorize?response_type=code&client_id=${TRAKT_CLIENT_ID}&redirect_uri=urn:ietf:wg:oauth:2.0:oob`;
-        window.open(authUrl, '_blank');
-
-        const authResult = await waitForTraktAuthCode(sessionId);
-        if (!authResult) return;
-        if (typeof authResult !== 'string') {
-            alert(authResult.error || '未能自动获取 Trakt 授权码。');
-            return;
-        }
+        let overlay = null;
+        let authWindow = null;
 
         try {
-            const data = await gmRequest({
+            const deviceData = await gmRequest({
                 method: 'POST',
-                url: `${TRAKT_API_URL}/oauth/token`,
+                url: `${TRAKT_API_URL}/oauth/device/code`,
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 data: JSON.stringify({
-                    code: authResult,
-                    client_id: TRAKT_CLIENT_ID,
-                    client_secret: TRAKT_CLIENT_SECRET,
-                    redirect_uri: 'urn:ietf:wg:oauth:2.0:oob',
-                    grant_type: 'authorization_code'
+                    client_id: TRAKT_CLIENT_ID
                 })
             });
 
-            debugLog('已收到 OAuth token 响应', data);
+            debugLog('已收到设备码授权响应', deviceData);
 
-            if (data && data.access_token) {
-                GM_setValue(ACCESS_TOKEN_KEY, data.access_token);
-                accessToken = data.access_token;
-                location.reload();
+            if (!deviceData?.device_code || !deviceData?.user_code || !deviceData?.verification_url) {
+                alert(`授权失败:\n${JSON.stringify(deviceData)}`);
                 return;
             }
 
-            alert(`授权失败:\n${JSON.stringify(data)}`);
-        } catch (error) {
-            debugError('OAuth token 请求失败', error);
-            if (error.status) {
-                alert(`授权失败: ${error.status}\n${typeof error.data === 'string' ? error.data : JSON.stringify(error.data)}`);
-            } else {
-                alert('授权过程中发生网络错误。');
+            let cancelled = false;
+            const verificationUrl = `${deviceData.verification_url.replace(/\/$/, '')}/${deviceData.user_code}`;
+            overlay = createModal(`
+                <h3 style="margin-top:0; color:#ED1C24;">Trakt 用户码连接</h3>
+                <p style="font-size:14px; color:#333; margin-bottom:12px; line-height:1.6;">
+                    请打开 Trakt 验证页面并输入下面的用户码完成授权。
+                </p>
+                <div style="margin: 0 0 16px; padding: 12px; border: 1px dashed #ED1C24; border-radius: 6px; background: #fff7f7;">
+                    <div style="font-size:12px; color:#666; margin-bottom:6px;">用户码</div>
+                    <div id="trakt-device-user-code" style="font-size:28px; letter-spacing:4px; font-weight:700; color:#111;">${deviceData.user_code}</div>
+                </div>
+                <p id="trakt-auth-status" style="font-size:13px; color:#666; margin-bottom:18px;">
+                    正在等待你在 Trakt 完成确认...
+                </p>
+                <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+                    <button id="trakt-auth-open" style="padding:8px 18px; cursor:pointer; background:#9F42C6; border:1px solid #9F42C6; border-radius:4px; color:#fff; font-size:14px;">打开验证页</button>
+                    <button id="trakt-auth-cancel" style="padding:8px 18px; cursor:pointer; background:#eee; border:1px solid #ccc; border-radius:4px; color:#333; font-size:14px;">取消</button>
+                </div>
+                <p style="font-size:12px; color:#999; margin:16px 0 0; line-height:1.5;">
+                    用户码约 ${Math.ceil((Number(deviceData.expires_in) || DEVICE_AUTH_TIMEOUT / 1000) / 60)} 分钟内有效。
+                </p>
+            `);
+
+            const status = document.getElementById('trakt-auth-status');
+            const openButton = document.getElementById('trakt-auth-open');
+            const cancelButton = document.getElementById('trakt-auth-cancel');
+
+            const setStatus = function (message) {
+                if (status) {
+                    status.textContent = message;
+                }
+            };
+
+            if (openButton) {
+                openButton.onclick = function () {
+                    closePopupWindow(authWindow);
+                    authWindow = window.open(verificationUrl, '_blank');
+                };
             }
+
+            if (cancelButton) {
+                cancelButton.onclick = function () {
+                    cancelled = true;
+                    setStatus('已取消授权。');
+                    closePopupWindow(authWindow);
+                    removeModal(overlay);
+                };
+            }
+
+            authWindow = window.open(verificationUrl, '_blank');
+
+            const tokenData = await pollForDeviceToken(
+                deviceData.device_code,
+                deviceData.interval || (DEVICE_AUTH_FALLBACK_INTERVAL / 1000),
+                deviceData.expires_in || (DEVICE_AUTH_TIMEOUT / 1000),
+                setStatus,
+                function () {
+                    return cancelled;
+                }
+            );
+
+            if (!tokenData || cancelled) return;
+            if (!tokenData.access_token) {
+                closePopupWindow(authWindow);
+                removeModal(overlay);
+                alert(`授权失败:\n${JSON.stringify(tokenData)}`);
+                return;
+            }
+
+            setStatus('授权成功，正在刷新页面...');
+            saveTraktTokens(tokenData);
+            closePopupWindow(authWindow);
+            removeModal(overlay);
+            location.reload();
+        } catch (error) {
+            debugError('设备码授权失败', error);
+            closePopupWindow(authWindow);
+            removeModal(overlay);
+            alert(error?.message || getDeviceAuthErrorMessage(error));
         }
     }
 
@@ -688,7 +813,11 @@
 
     function clearAccessToken() {
         accessToken = '';
+        refreshToken = '';
+        tokenExpiresAt = 0;
         GM_setValue(ACCESS_TOKEN_KEY, '');
+        GM_setValue(REFRESH_TOKEN_KEY, '');
+        GM_setValue(TOKEN_EXPIRES_AT_KEY, 0);
     }
 
     function consumeButtonEvent(event) {
@@ -1096,117 +1225,6 @@
         return wrapper;
     }
 
-    function isTraktOAuthPage() {
-        return location.hostname === 'trakt.tv' && location.pathname.startsWith('/oauth/authorize');
-    }
-
-    function extractAuthorizationCode() {
-        const searchParams = new URLSearchParams(location.search);
-        const searchCode = searchParams.get('code');
-        if (searchCode) return searchCode.trim();
-
-        const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''));
-        const hashCode = hashParams.get('code');
-        if (hashCode) return hashCode.trim();
-
-        const selectorCandidates = [
-            'code',
-            'pre',
-            'input[readonly]',
-            'input[type="text"]',
-            '[class*="code"]',
-            '[id*="code"]'
-        ];
-
-        for (const selector of selectorCandidates) {
-            const elements = document.querySelectorAll(selector);
-            for (const element of elements) {
-                const value = (element.value || element.textContent || '').trim();
-                if (/^[A-Za-z0-9_-]{8,}$/.test(value)) {
-                    return value;
-                }
-            }
-        }
-
-        const bodyText = document.body?.innerText || '';
-        const patterns = [
-            /authorization code[^A-Za-z0-9_-]*([A-Za-z0-9_-]{8,})/i,
-            /\bcode[^A-Za-z0-9_-]*([A-Za-z0-9_-]{8,})\b/i
-        ];
-
-        for (const pattern of patterns) {
-            const match = bodyText.match(pattern);
-            if (match?.[1]) {
-                return match[1].trim();
-            }
-        }
-
-        return '';
-    }
-
-    function initTraktOAuthBridge() {
-        const authState = getAuthState();
-        if (!authState?.sessionId || authState.status !== 'pending') return;
-
-        debugLog('Trakt 授权页桥接已启动', {
-            sessionId: authState.sessionId,
-            url: location.href
-        });
-
-        const publishCode = function () {
-            const code = extractAuthorizationCode();
-            if (!code) return false;
-
-            debugLog('Trakt 授权页已提取授权码', {
-                sessionId: authState.sessionId,
-                codeLength: code.length
-            });
-
-            setAuthState({
-                sessionId: authState.sessionId,
-                status: 'success',
-                code: code,
-                receivedAt: Date.now()
-            });
-
-            setTimeout(function () {
-                window.close();
-            }, 300);
-            return true;
-        };
-
-        if (publishCode()) return;
-
-        const observer = new MutationObserver(function () {
-            if (!publishCode()) return;
-            observer.disconnect();
-        });
-
-        observer.observe(document.documentElement, {
-            childList: true,
-            subtree: true,
-            characterData: true
-        });
-
-        setTimeout(function () {
-            observer.disconnect();
-            const latestState = getAuthState();
-            if (!latestState || latestState.sessionId !== authState.sessionId || latestState.status !== 'pending') {
-                return;
-            }
-
-            debugError('Trakt 授权页未检测到授权码', {
-                sessionId: authState.sessionId,
-                url: location.href
-            });
-            setAuthState({
-                sessionId: authState.sessionId,
-                status: 'error',
-                message: 'Trakt 授权页未检测到授权码，请确认已点击 Allow。'
-            });
-        }, AUTH_CODE_WAIT_TIMEOUT);
-    }
-
     async function init() {
         const mobilePage = isMobilePage();
         if (mobilePage) {
@@ -1328,11 +1346,6 @@
     }
 
     window.addEventListener('load', function () {
-        if (isTraktOAuthPage()) {
-            initTraktOAuthBridge();
-            return;
-        }
-
         init().catch(function (error) {
             debugError('初始化失败', error);
         });
