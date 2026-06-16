@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         豆瓣影视添加 Trakt 待看按钮
 // @namespace    https://github.com/DemoJameson/Userscripts
-// @version      1.3.1
+// @version      1.3.2
 // @description  在豆瓣电影和剧集页面添加 Trakt 待看按钮，并提供可切换的调试日志。
 // @author       DemoJameson
 // @updateURL    https://raw.githubusercontent.com/DemoJameson/Userscripts/main/douban-trakt.user.js
@@ -170,11 +170,13 @@
     const DEBUG_KEY = 'trakt_debug_enabled';
     const DEVICE_AUTH_TIMEOUT = 180000;
     const DEVICE_AUTH_FALLBACK_INTERVAL = 5000;
+    const TOKEN_REFRESH_BUFFER = 300000;
 
     let accessToken = GM_getValue(ACCESS_TOKEN_KEY, '');
     let refreshToken = GM_getValue(REFRESH_TOKEN_KEY, '');
     let tokenExpiresAt = Number(GM_getValue(TOKEN_EXPIRES_AT_KEY, 0)) || 0;
     let debugEnabled = GM_getValue(DEBUG_KEY, false);
+    let tokenRefreshPromise = null;
 
     if (location.hostname === 'movie.douban.com') {
         GM_addStyle(DESKTOP_STYLE);
@@ -286,9 +288,13 @@
 
     function saveTraktTokens(data) {
         accessToken = data.access_token || '';
-        refreshToken = data.refresh_token || '';
-        tokenExpiresAt = data.created_at && data.expires_in
-            ? (Number(data.created_at) + Number(data.expires_in)) * 1000
+        refreshToken = data.refresh_token || refreshToken || '';
+
+        const createdAtMs = data.created_at
+            ? Number(data.created_at) * 1000
+            : Date.now();
+        tokenExpiresAt = data.expires_in
+            ? createdAtMs + Number(data.expires_in) * 1000
             : 0;
 
         GM_setValue(ACCESS_TOKEN_KEY, accessToken);
@@ -446,12 +452,46 @@
         return status >= 200 && status < 300;
     }
 
+    function redactSensitiveFields(value) {
+        const sensitiveKeys = new Set([
+            'authorization',
+            'access_token',
+            'refresh_token',
+            'client_secret'
+        ]);
+
+        if (!value || typeof value !== 'object') return value;
+
+        if (Array.isArray(value)) {
+            return value.map(redactSensitiveFields);
+        }
+
+        return Object.entries(value).reduce(function (result, [key, entry]) {
+            result[key] = sensitiveKeys.has(key.toLowerCase())
+                ? '[已脱敏]'
+                : redactSensitiveFields(entry);
+            return result;
+        }, {});
+    }
+
+    function redactRequestData(data) {
+        if (typeof data !== 'string') {
+            return redactSensitiveFields(data);
+        }
+
+        try {
+            return JSON.stringify(redactSensitiveFields(JSON.parse(data)));
+        } catch (error) {
+            return data;
+        }
+    }
+
     async function gmRequest(options) {
         debugLog('发起请求', {
             method: options.method || 'GET',
             url: options.url,
-            headers: options.headers,
-            data: options.data
+            headers: redactSensitiveFields(options.headers),
+            data: redactRequestData(options.data)
         });
 
         const response = await new Promise(function (resolve, reject) {
@@ -467,7 +507,7 @@
             method: options.method || 'GET',
             url: options.url,
             status: response.status,
-            data: responseData
+            data: redactSensitiveFields(responseData)
         });
 
         if (!isSuccessfulStatus(response.status)) {
@@ -475,6 +515,105 @@
         }
 
         return responseData;
+    }
+
+    function createAuthRequiredError(message) {
+        const error = new Error(message || '需要重新授权 Trakt。');
+        error.status = 401;
+        return error;
+    }
+
+    function isAccessTokenExpiringSoon() {
+        return tokenExpiresAt > 0 && Date.now() >= tokenExpiresAt - TOKEN_REFRESH_BUFFER;
+    }
+
+    async function refreshTraktToken() {
+        if (tokenRefreshPromise) return tokenRefreshPromise;
+
+        if (!refreshToken) {
+            throw createAuthRequiredError('缺少 Trakt refresh token。');
+        }
+
+        tokenRefreshPromise = (async function () {
+            debugLog('开始刷新 Trakt token', {
+                tokenExpiresAt: tokenExpiresAt || null
+            });
+
+            let data;
+            try {
+                data = await gmRequest({
+                    method: 'POST',
+                    url: `${TRAKT_API_URL}/oauth/token`,
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    data: JSON.stringify({
+                        grant_type: 'refresh_token',
+                        refresh_token: refreshToken,
+                        client_id: TRAKT_CLIENT_ID,
+                        client_secret: TRAKT_CLIENT_SECRET
+                    })
+                });
+            } catch (error) {
+                debugError('刷新 Trakt token 失败', error);
+                if (error.status === 400 || error.status === 401) {
+                    throw createAuthRequiredError('Trakt refresh token 已失效。');
+                }
+
+                throw error;
+            }
+
+            saveTraktTokens(data);
+            debugLog('Trakt token 刷新成功', {
+                tokenExpiresAt: tokenExpiresAt || null
+            });
+        })();
+
+        try {
+            await tokenRefreshPromise;
+        } finally {
+            tokenRefreshPromise = null;
+        }
+    }
+
+    async function ensureValidAccessToken() {
+        if (!accessToken) {
+            throw createAuthRequiredError('缺少 Trakt access token。');
+        }
+
+        if (isAccessTokenExpiringSoon()) {
+            await refreshTraktToken();
+        }
+    }
+
+    function withCurrentAuthHeaders(options) {
+        return {
+            ...options,
+            headers: {
+                ...(options.headers || {}),
+                Authorization: `Bearer ${accessToken}`
+            }
+        };
+    }
+
+    async function gmAuthenticatedTraktRequest(options) {
+        await ensureValidAccessToken();
+
+        try {
+            return await gmRequest(withCurrentAuthHeaders(options));
+        } catch (error) {
+            if (error.status !== 401 || !refreshToken) {
+                throw error;
+            }
+
+            debugLog('Trakt 请求返回 401，尝试刷新 token 后重试', {
+                method: options.method || 'GET',
+                url: options.url
+            });
+
+            await refreshTraktToken();
+            return gmRequest(withCurrentAuthHeaders(options));
+        }
     }
 
     async function authenticateTrakt() {
@@ -1023,10 +1162,10 @@
         setButtonState(button, getWatchlistLabel(button, 'loading'), null, null, true);
 
         try {
-            const watchlist = await gmRequest({
+            const watchlist = await gmAuthenticatedTraktRequest({
                 method: 'GET',
                 url: `${TRAKT_API_URL}/sync/watchlist?limit=2000`,
-                headers: traktHeaders(true)
+                headers: traktHeaders(false)
             });
 
             debugLog('已收到待看列表响应', watchlist);
@@ -1076,10 +1215,10 @@
         setButtonState(button, getWatchlistLabel(button, 'syncing'), action, null, true);
 
         try {
-            const data = await gmRequest({
+            const data = await gmAuthenticatedTraktRequest({
                 method: 'POST',
                 url: `${TRAKT_API_URL}${endpoint}`,
-                headers: traktHeaders(true),
+                headers: traktHeaders(false),
                 data: JSON.stringify(payload)
             });
 
