@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         豆瓣影视添加 Trakt 待看按钮
 // @namespace    https://github.com/DemoJameson/Userscripts
-// @version      1.3.2
+// @version      1.3.3
 // @description  在豆瓣电影和剧集页面添加 Trakt 待看按钮，并提供可切换的调试日志。
 // @author       DemoJameson
 // @updateURL    https://raw.githubusercontent.com/DemoJameson/Userscripts/main/douban-trakt.user.js
@@ -159,7 +159,6 @@
 
     const TRAKT_API_URL = 'https://api.trakt.tv';
     const TRAKT_CLIENT_ID = 'ae3b79dfd82d72aeab14337550d6762b9f161ddd5eea99e8ca1e2ddb0d484ecc';
-    const TRAKT_CLIENT_SECRET = '045f13defe55c1562ef7df44a67d0762843649aadaf15b8314620f50051f5b46';
     const TMDB_API_URL = 'https://api.tmdb.org';
     const TMDB_API_KEY = 'ebb2c093078553178d5d75c6d86d7bde';
     const DOUBAN_FRODO_API_URL = 'https://frodo.douban.com/api/v2/movie';
@@ -387,8 +386,7 @@
                     },
                     data: JSON.stringify({
                         code: deviceCode,
-                        client_id: TRAKT_CLIENT_ID,
-                        client_secret: TRAKT_CLIENT_SECRET
+                        client_id: TRAKT_CLIENT_ID
                     })
                 });
 
@@ -456,8 +454,7 @@
         const sensitiveKeys = new Set([
             'authorization',
             'access_token',
-            'refresh_token',
-            'client_secret'
+            'refresh_token'
         ]);
 
         if (!value || typeof value !== 'object') return value;
@@ -550,8 +547,7 @@
                     data: JSON.stringify({
                         grant_type: 'refresh_token',
                         refresh_token: refreshToken,
-                        client_id: TRAKT_CLIENT_ID,
-                        client_secret: TRAKT_CLIENT_SECRET
+                        client_id: TRAKT_CLIENT_ID
                     })
                 });
             } catch (error) {
@@ -618,12 +614,11 @@
 
     async function authenticateTrakt() {
         debugLog('开始 Trakt 授权', {
-            hasClientId: Boolean(TRAKT_CLIENT_ID),
-            hasClientSecret: Boolean(TRAKT_CLIENT_SECRET)
+            hasClientId: Boolean(TRAKT_CLIENT_ID)
         });
 
-        if (!TRAKT_CLIENT_ID || !TRAKT_CLIENT_SECRET) {
-            alert('脚本中未找到 Trakt Client ID 或 Secret，请检查代码。');
+        if (!TRAKT_CLIENT_ID) {
+            alert('脚本中未找到 Trakt Client ID，请检查代码。');
             return;
         }
 
